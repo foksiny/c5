@@ -1,0 +1,11 @@
+include <std.c5h>
+
+macro add(a, b) {
+    a + b
+}
+
+void main() {
+    int<32> result = add(10, 20);
+
+    std::printf("%d\n", result);
+}

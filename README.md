@@ -230,6 +230,29 @@ void main() {
 }
 ```
 
+### 12. Macros
+C5 supports simple macros that are expanded at compile time. Macros are defined using the `macro` keyword and work like inline functions.
+
+```c
+include <std.c5h>
+
+// Define a macro that adds two values
+macro add(a, b) {
+    a + b
+}
+
+void main() {
+    int<32> result = add(10, 20);
+    std::printf("Sum: %d\n", result);  // Output: Sum: 30
+}
+```
+
+**Key features of C5 macros:**
+- **Parameter substitution**: Macro parameters are replaced with the actual arguments
+- **Expression bodies**: The last expression in the macro body becomes the result
+- **Zero overhead**: Macros are expanded at compile time, no runtime cost
+- **Type flexibility**: Macros work with any compatible types
+
 ---
 
 ## 📜 License

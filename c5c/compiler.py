@@ -18,6 +18,115 @@ def _strip_loc(node):
     # Recursively process children
     return tuple(_strip_loc(child) for child in node)
 
+def _collect_macros(ast):
+    """Collect all macro definitions from the AST."""
+    macros = {}
+    for node in ast:
+        if isinstance(node, tuple) and node[0] == 'macro':
+            _, name, params, body, _ = node
+            macros[name] = (params, body)
+    return macros
+
+def _substitute_params(node, param_map, loc):
+    """Substitute parameter names with argument expressions in an AST node."""
+    if not isinstance(node, tuple):
+        if isinstance(node, list):
+            return [_substitute_params(n, param_map, loc) for n in node]
+        return node
+    
+    tag = node[0]
+    
+    # If it's an identifier, check if it's a parameter
+    if tag == 'id':
+        name = node[1]
+        if name in param_map:
+            # Return a copy of the argument expression with updated location
+            arg = param_map[name]
+            return _update_loc(arg, loc)
+        return node
+    
+    # Recursively process all children
+    new_children = []
+    for i, child in enumerate(node):
+        if isinstance(child, (tuple, list)):
+            new_children.append(_substitute_params(child, param_map, loc))
+        else:
+            new_children.append(child)
+    
+    return tuple(new_children)
+
+def _update_loc(node, loc):
+    """Update location information in an AST node recursively."""
+    if not isinstance(node, tuple):
+        if isinstance(node, list):
+            return [_update_loc(n, loc) for n in node]
+        return node
+    
+    # Process children first
+    new_children = []
+    for child in node[:-1] if len(node) > 1 else node:
+        if isinstance(child, (tuple, list)):
+            new_children.append(_update_loc(child, loc))
+        else:
+            new_children.append(child)
+    
+    # Check if last element is a location tuple
+    if len(node) >= 2:
+        last = node[-1]
+        if isinstance(last, tuple) and len(last) == 2 and all(isinstance(x, int) for x in last):
+            # Replace location
+            return tuple(new_children) + (loc,)
+    
+    return tuple(new_children)
+
+def _expand_macros(ast, macros):
+    """Expand all macro calls in the AST."""
+    if not isinstance(ast, tuple):
+        if isinstance(ast, list):
+            return [_expand_macros(node, macros) for node in ast]
+        return ast
+    
+    tag = ast[0]
+    
+    # Check for macro call: call node with id target matching a macro name
+    if tag == 'call':
+        target = ast[1]
+        args = ast[2]
+        loc = ast[-1] if len(ast) > 3 and isinstance(ast[-1], tuple) else (1, 0)
+        
+        # Check if target is a simple identifier that matches a macro
+        if isinstance(target, tuple) and target[0] == 'id':
+            macro_name = target[1]
+            if macro_name in macros:
+                params, body = macros[macro_name]
+                
+                # Build parameter -> argument mapping
+                param_map = {}
+                for i, param in enumerate(params):
+                    if i < len(args):
+                        param_map[param] = args[i]
+                
+                # Substitute parameters in body
+                expanded_body = _substitute_params(body, param_map, loc)
+                
+                # If body is a single expression statement, extract the expression
+                if (isinstance(expanded_body, list) and len(expanded_body) == 1 and
+                    isinstance(expanded_body[0], tuple) and expanded_body[0][0] == 'expr_stmt'):
+                    return _expand_macros(expanded_body[0][1], macros)
+                
+                # Return the expanded body (could be multiple statements)
+                return _expand_macros(expanded_body, macros)
+    
+    # Recursively process all children
+    new_children = []
+    for child in ast:
+        if isinstance(child, (tuple, list)):
+            new_children.append(_expand_macros(child, macros))
+        else:
+            new_children.append(child)
+    
+    return tuple(new_children)
+
 def compile_file(filepath, include_paths=None):
     if include_paths is None: include_paths = []
     
@@ -65,13 +174,20 @@ def compile_file(filepath, include_paths=None):
             new_ast.extend(namespaced_ast)
         else:
             new_ast.append(node)
+    
+    # Collect and expand macros
+    macros = _collect_macros(new_ast)
+    expanded_ast = _expand_macros(new_ast, macros)
+    
+    # Remove macro definitions from AST after expansion
+    final_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
-    analyzer.analyze(new_ast)
+    analyzer.analyze(final_ast)
 
     # Strip location info before passing to optimizer/codegen
-    stripped_ast = _strip_loc(new_ast)
+    stripped_ast = _strip_loc(final_ast)
 
     from .optimizer import Optimizer
     opt = Optimizer()

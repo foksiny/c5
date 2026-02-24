@@ -13,6 +13,7 @@ def lex(code):
     token_specification = [
         ('COMMENT',   r'//[^\n]*'),
         ('INCLUDE',   r'include\b'),
+        ('MACRO',     r'macro\b'),
         ('VOID',      r'void\b'),
         ('RETURN',    r'return\b'),
         ('IF',        r'if\b'),

@@ -29,6 +29,8 @@ class Parser:
                 decls.append(self.parse_enum_decl())
             elif self.peek().type == 'LET':
                 decls.append(self.parse_let_decl())
+            elif self.peek().type == 'MACRO':
+                decls.append(self.parse_macro())
             else:
                 decls.append(self.parse_decl())
         return decls
@@ -74,6 +76,61 @@ class Parser:
         self.consume('RBRACE')
         self.consume('SEMI')
         return ('enum_decl', name, variants, loc)
+
+    def parse_macro(self):
+        loc = self._loc()
+        self.consume('MACRO')
+        name = self.consume('ID').value
+        self.consume('LPAREN')
+        params = []
+        if self.peek().type != 'RPAREN':
+            while True:
+                params.append(self.consume('ID').value)
+                if self.peek().type == 'COMMA':
+                    self.consume('COMMA')
+                else:
+                    break
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        # Parse macro body - can be either statements or a single expression
+        body = []
+        while self.peek().type != 'RBRACE':
+            # Try to parse as statement first, but allow expressions without semicolons
+            if self.peek().type in ('IF', 'WHILE', 'FOR', 'DO', 'RETURN', 'VOID', 'SIGNED', 'UNSIGNED') or \
+               (self.peek().type == 'ID' and self._is_decl_start()):
+                body.append(self.parse_stmt())
+            else:
+                # Parse as expression
+                expr = self.parse_expr()
+                if self.peek().type == 'SEMI':
+                    self.consume('SEMI')
+                    body.append(('expr_stmt', expr, loc))
+                else:
+                    # Expression without semicolon - store as-is
+                    body.append(('expr_stmt', expr, loc))
+        self.consume('RBRACE')
+        return ('macro', name, params, body, loc)
+    
+    def _is_decl_start(self):
+        """Check if current position starts a declaration (for macro parsing)."""
+        pos = self.pos
+        if self.peek().type != 'ID':
+            return False
+        # Skip base type ID
+        look = pos + 1
+        # Skip <...>
+        if look < len(self.tokens) and self.tokens[look].type == 'LT':
+            nest = 1
+            look += 1
+            while look < len(self.tokens) and nest > 0:
+                if self.tokens[look].type == 'LT': nest += 1
+                if self.tokens[look].type == 'GT': nest -= 1
+                look += 1
+        # Skip *
+        while look < len(self.tokens) and self.tokens[look].type == 'MUL':
+            look += 1
+        # If next is an ID, it's a declaration
+        return look < len(self.tokens) and self.tokens[look].type == 'ID'
 
     def parse_include(self):
         self.consume('INCLUDE')
