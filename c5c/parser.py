@@ -384,7 +384,7 @@ class Parser:
     def parse_factor(self):
         loc = self._loc()
         left = self.parse_unary()
-        while self.peek().type in ('MUL', 'DIV'):
+        while self.peek().type in ('MUL', 'DIV', 'MOD'):
             op = self.consume().value
             right = self.parse_unary()
             left = ('binop', op, left, right, loc)

@@ -15,6 +15,8 @@ class SemanticAnalyzer:
         self.source_code = source_code
         self.source_lines = source_code.split('\n') if source_code else []
         self.filename = filename or "unknown"
+        self.show_warnings = True
+        self.library_funcs = set()  # Functions from library files (no dead code warnings)
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -91,9 +93,11 @@ class SemanticAnalyzer:
         warning_msg = f"{location_str}: \033[93mwarning\033[0m: {m}\n{source_context}\n  \033[94m💡 Tip:\033[0m {t}"
         self.warnings.append(warning_msg)
 
-    def analyze(self, ast):
+    def analyze(self, ast, require_main=True, show_warnings=True):
+        self.show_warnings = show_warnings
         self._scan_declarations(ast)
-        if 'main' not in self.functions: self.add_error("E009")
+        
+        if require_main and 'main' not in self.functions: self.add_error("E009")
             
         if isinstance(ast, list):
             for node in ast: self._analyze_node(node)
@@ -107,7 +111,8 @@ class SemanticAnalyzer:
         
         for name, info in self.functions.items():
             is_extern = info[3]
-            if name not in self.used_funcs and name != 'main' and not is_extern:
+            is_lib_func = name in self.library_funcs
+            if name not in self.used_funcs and name != 'main' and not is_extern and not is_lib_func:
                 loc = self.func_locs.get(name, (1, 0))
                 self.add_warning("W008", name, loc)
 
@@ -116,7 +121,7 @@ class SemanticAnalyzer:
             for e in sorted(list(set(self.errors))): print(e)
             sys.exit(1)
             
-        if self.warnings:
+        if self.warnings and self.show_warnings:
             print(f"\n\033[93m⚠️  C5 COMPILER: {len(self.warnings)} QUALITY WARNING(S)\033[0m")
             for w in sorted(list(set(self.warnings))): print(w)
 

@@ -17,6 +17,7 @@ class Optimizer:
                         if op == '-': return ('number', str(lval - rval))
                         if op == '*': return ('number', str(lval * rval))
                         if op == '/': return ('number', str(lval // rval))
+                        if op == '%': return ('number', str(lval % rval))
                         if op == '>': return ('number', '1' if lval > rval else '0')
                         if op == '<': return ('number', '1' if lval < rval else '0')
                         if op == '==': return ('number', '1' if lval == rval else '0')

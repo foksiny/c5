@@ -127,7 +127,7 @@ def _expand_macros(ast, macros):
     
     return tuple(new_children)
 
-def compile_file(filepath, include_paths=None):
+def compile_file(filepath, include_paths=None, is_library=False):
     if include_paths is None: include_paths = []
     
     code = open(filepath).read()
@@ -184,7 +184,96 @@ def compile_file(filepath, include_paths=None):
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
-    analyzer.analyze(final_ast)
+    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
+
+    # Strip location info before passing to optimizer/codegen
+    stripped_ast = _strip_loc(final_ast)
+
+    from .optimizer import Optimizer
+    opt = Optimizer()
+    optimized_ast = opt.optimize_ast(stripped_ast)
+
+    cg = CodeGen(optimizer=opt)
+    return cg.generate(optimized_ast)
+
+
+def compile_files(filepaths, include_paths=None, is_library=False):
+    """Compile multiple source files into a single assembly output.
+    
+    This is used for library compilation where implementation files (.c5)
+    are compiled together with the main file.
+    """
+    if include_paths is None: include_paths = []
+    
+    combined_ast = []
+    all_code = ""
+    primary_file = filepaths[0]
+    library_funcs = set()  # Track functions from non-primary files
+    
+    for filepath in filepaths:
+        code = open(filepath).read()
+        all_code += f"\n// File: {filepath}\n" + code
+        
+        tokens = lex(code)
+        parser = Parser(tokens)
+        ast = parser.parse_program()
+        
+        dir_path = os.path.dirname(os.path.abspath(filepath))
+        global_path = os.path.expanduser("~/.c5/include")
+        
+        # If this is not the primary file, track its functions as library functions
+        is_primary = (filepath == primary_file)
+        
+        for node in ast:
+            if node[0] == 'include':
+                fname = node[1]
+                inc_list = include_paths if include_paths else []
+                search_paths = [dir_path] + inc_list + [
+                    os.path.join(dir_path, '..', 'c5include'),
+                    os.path.join(os.getcwd(), 'c5include'),
+                    global_path
+                ]
+                inc_path = None
+                for p in search_paths:
+                    fullpath = os.path.join(p, fname)
+                    if os.path.exists(fullpath):
+                        inc_path = fullpath
+                        break
+                if not inc_path:
+                    raise Exception(f"Include not found: {fname}")
+                
+                inc_code = open(inc_path).read()
+                inc_tokens = lex(inc_code)
+                inc_ast = Parser(inc_tokens).parse_program()
+                
+                # Auto-namespace based on filename (e.g., std.c5h -> std::)
+                namespace = os.path.splitext(fname)[0]
+                namespaced_ast = []
+                for n in inc_ast:
+                    if isinstance(n, tuple) and n[0] in ('func', 'extern'):
+                        l = list(n)
+                        l[2] = f"{namespace}::{l[2]}"
+                        namespaced_ast.append(tuple(l))
+                    else:
+                        namespaced_ast.append(n)
+                combined_ast.extend(namespaced_ast)
+            else:
+                # Track functions from non-primary files
+                if not is_primary and isinstance(node, tuple) and node[0] == 'func':
+                    library_funcs.add(node[2])  # node[2] is the function name
+                combined_ast.append(node)
+    
+    # Collect and expand macros
+    macros = _collect_macros(combined_ast)
+    expanded_ast = _expand_macros(combined_ast, macros)
+    
+    # Remove macro definitions from AST after expansion
+    final_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+            
+    from .analyzer import SemanticAnalyzer
+    analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
+    analyzer.library_funcs = library_funcs  # Pass library functions to analyzer
+    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
 
     # Strip location info before passing to optimizer/codegen
     stripped_ast = _strip_loc(final_ast)

@@ -1,0 +1,12 @@
+// use 'c5c main.c5 math.c5 -o <outname>' or 'c5c main.c math.c5' to compile this.
+include <std.c5h>
+include <math.c5h>
+
+void main() {
+    int<32> a = 10;
+    int<32> b = 20;
+
+    int<32> r = math::add(a, b);
+
+    std::printf("%d\n", r);
+}

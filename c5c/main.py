@@ -2,15 +2,16 @@ import sys
 import os
 import subprocess
 import argparse
-from .compiler import compile_file
+from .compiler import compile_file, compile_files
 
 def main():
     parser = argparse.ArgumentParser(description="C5 Compiler (c5c)")
-    parser.add_argument("input", nargs="?", help="Source .c5 file")
+    parser.add_argument("inputs", nargs="*", help="Source .c5 file(s)")
     parser.add_argument("-o", "--output", help="Output filename")
     parser.add_argument("-S", action="store_true", help="Output assembly only")
     parser.add_argument("-I", "--include", action="append", help="Add include search path")
     parser.add_argument("--setup-libs", action="store_true", help="Setup global C5 libraries")
+    parser.add_argument("--lib", action="store_true", help="Compile as library (output .o file)")
     
     args = parser.parse_args()
 
@@ -32,17 +33,26 @@ def main():
         print("Success!")
         sys.exit(0)
     
-    input_file = args.input
-    if not input_file.endswith('.c5'):
-        print("Error: Expected a .c5 file")
+    input_files = args.inputs
+    if not input_files:
+        print("Error: No input files provided")
         sys.exit(1)
-        
-    base_name = os.path.splitext(input_file)[0]
+    
+    for input_file in input_files:
+        if not input_file.endswith('.c5'):
+            print(f"Error: Expected a .c5 file, got {input_file}")
+            sys.exit(1)
+    
+    # Use first file as base for output naming if not specified
+    base_name = os.path.splitext(input_files[0])[0]
     
     # Assembly phase
-    print(f"Compiling {input_file} to GAS assembly...")
+    print(f"Compiling {', '.join(input_files)} to GAS assembly...")
     try:
-        asm = compile_file(input_file, include_paths=args.include)
+        if len(input_files) == 1:
+            asm = compile_file(input_files[0], include_paths=args.include, is_library=args.lib)
+        else:
+            asm = compile_files(input_files, include_paths=args.include, is_library=args.lib)
     except Exception as e:
         print(f"Compilation error: {e}")
         sys.exit(1)
@@ -55,32 +65,51 @@ def main():
         return
 
     # Full compilation phase
-    final_out = args.output if args.output else base_name
-    s_file = base_name + ".tmp.s"
-    o_file = base_name + ".tmp.o"
+    if args.lib:
+        # Library mode: output a .o object file
+        final_out = args.output if args.output else base_name + ".o"
+        s_file = base_name + ".tmp.s"
 
-    with open(s_file, "w") as f:
-        f.write(asm)
-        
-    print(f"Assembling...")
-    res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
-    if res.returncode != 0:
-        print("Error assembling")
+        with open(s_file, "w") as f:
+            f.write(asm)
+            
+        print(f"Assembling to object file...")
+        res = subprocess.run(["gcc", "-c", s_file, "-o", final_out])
+        if res.returncode != 0:
+            print("Error assembling")
+            if os.path.exists(s_file): os.remove(s_file)
+            sys.exit(res.returncode)
+            
         if os.path.exists(s_file): os.remove(s_file)
-        sys.exit(res.returncode)
-        
-    print(f"Linking...")
-    res = subprocess.run(["gcc", o_file, "-o", final_out])
-    if res.returncode != 0:
-        print("Error linking")
+        print(f"Success! Library object file ready at: {final_out}")
+    else:
+        # Executable mode
+        final_out = args.output if args.output else base_name
+        s_file = base_name + ".tmp.s"
+        o_file = base_name + ".tmp.o"
+
+        with open(s_file, "w") as f:
+            f.write(asm)
+            
+        print(f"Assembling...")
+        res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
+        if res.returncode != 0:
+            print("Error assembling")
+            if os.path.exists(s_file): os.remove(s_file)
+            sys.exit(res.returncode)
+            
+        print(f"Linking...")
+        res = subprocess.run(["gcc", o_file, "-o", final_out])
+        if res.returncode != 0:
+            print("Error linking")
+            if os.path.exists(s_file): os.remove(s_file)
+            if os.path.exists(o_file): os.remove(o_file)
+            sys.exit(res.returncode)
+            
+        print("Cleaning up intermediate files...")
         if os.path.exists(s_file): os.remove(s_file)
         if os.path.exists(o_file): os.remove(o_file)
-        sys.exit(res.returncode)
-        
-    print("Cleaning up intermediate files...")
-    if os.path.exists(s_file): os.remove(s_file)
-    if os.path.exists(o_file): os.remove(o_file)
-    print(f"Success! Executable ready at: {final_out}")
+        print(f"Success! Executable ready at: {final_out}")
 
 if __name__ == '__main__':
     main()

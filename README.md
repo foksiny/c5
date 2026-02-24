@@ -255,5 +255,109 @@ void main() {
 
 ---
 
+## 📚 Library Creation
+
+C5 supports creating and using libraries through a combination of header files (`.c5h`) and implementation files (`.c5`).
+
+### Library Structure
+
+A typical C5 library consists of two files:
+
+1. **Header file (`.c5h`)**: Contains function declarations (prototypes)
+2. **Implementation file (`.c5`)**: Contains the actual function definitions
+
+#### Example: Math Library
+
+**math.c5h** (header file):
+```c
+// Function declarations for the math library
+int<32> add(int<32> a, int<32> b);
+int<32> sub(int<32> a, int<32> b);
+int<32> mul(int<32> a, int<32> b);
+int<32> div(int<32> a, int<32> b);
+```
+
+**math.c5** (implementation file):
+```c
+int<32> add(int<32> a, int<32> b) {
+    return a + b;
+}
+
+int<32> sub(int<32> a, int<32> b) {
+    return a - b;
+}
+
+int<32> mul(int<32> a, int<32> b) {
+    return a * b;
+}
+
+int<32> div(int<32> a, int<32> b) {
+    return a / b;
+}
+```
+
+### Using Libraries
+
+To use a library in your C5 project:
+
+**main.c5**:
+```c
+include <std.c5h>
+include <math.c5h>  // Include the library header
+
+void main() {
+    int<32> a = 10;
+    int<32> b = 20;
+
+    // Call library functions using the namespace (derived from filename)
+    int<32> result = math::add(a, b);
+    
+    std::printf("Result: %d\n", result);
+}
+```
+
+### Compiling with Libraries
+
+When compiling a project that uses local libraries, pass both the main file and the library implementation file(s) to the compiler:
+
+```bash
+# Compile main.c5 with math.c5 library
+c5c main.c5 math.c5 -o myapp
+
+# Multiple libraries can be included
+c5c main.c5 math.c5 utils.c5 -o myapp
+```
+
+### Creating Reusable Object Libraries
+
+You can also compile library implementation files into object files (`.o`) for later linking:
+
+```bash
+# Compile math.c5 to an object file (no main function required)
+c5c math.c5 --lib -o math.o
+
+# Later, link with your main program
+gcc main.o math.o -o myapp
+```
+
+### Library Namespacing
+
+When you include a header file (e.g., `include <math.c5h>`), all functions declared in that header are automatically placed in a namespace derived from the filename:
+
+- `math.c5h` → `math::` namespace
+- `utils.c5h` → `utils::` namespace
+- `std.c5h` → `std::` namespace
+
+This prevents symbol collisions between different libraries.
+
+### Best Practices
+
+1. **One library per header/implementation pair**: Keep related functions together
+2. **Consistent naming**: Use the same base name for `.c5h` and `.c5` files
+3. **Document your API**: Add comments in the header file describing each function
+4. **Type consistency**: Ensure declarations in `.c5h` match definitions in `.c5`
+
+---
+
 ## 📜 License
 This project is licensed under the [MIT License](LICENSE).

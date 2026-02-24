@@ -913,6 +913,10 @@ __c5_str_sub:
                 elif op == '/':
                     self.text.append("    cqo")
                     self.text.append("    idiv %rcx")
+                elif op == '%':
+                    self.text.append("    cqo")
+                    self.text.append("    idiv %rcx")
+                    self.text.append("    mov %rdx, %rax")  # Remainder is in RDX
                 elif op == '>':
                     self.text.append("    cmp %rcx, %rax")
                     self.text.append("    setg %al")
