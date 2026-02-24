@@ -1,0 +1,48 @@
+// C5 Standard Library Headers
+// Types: int = 64-bit, int<32> = 32-bit, float = 64-bit (double), float<32> = 32-bit
+
+// stdio.h
+int<32> printf(string fmt, ...);
+int<32> sprintf(string str, string fmt, ...);
+int<32> fprintf(void* stream, string fmt, ...);
+int<32> puts(string s);
+int<32> putchar(int<32> c);
+int<32> getchar();
+string gets(string s);
+int<32> scanf(string fmt, ...);
+int<32> sscanf(string str, string fmt, ...);
+int<32> fscanf(void* stream, string fmt, ...);
+
+void* fopen(string filename, string mode);
+int<32> fclose(void* stream);
+int<32> fgetc(void* stream);
+string fgets(string s, int<32> n, void* stream);
+int<32> fputc(int<32> c, void* stream);
+int<32> fputs(string s, void* stream);
+int fread(void* ptr, int size, int nmemb, void* stream);
+int fwrite(void* ptr, int size, int nmemb, void* stream);
+int<32> fseek(void* stream, int offset, int<32> whence);
+int ftell(void* stream);
+void rewind(void* stream);
+int<32> feof(void* stream);
+int<32> ferror(void* stream);
+int<32> fflush(void* stream);
+int<32> remove(string filename);
+int<32> rename(string oldname, string newname);
+
+// stdlib.h
+void* malloc(int size);
+void* calloc(int nmemb, int size);
+void* realloc(void* ptr, int size);
+void free(void* ptr);
+void exit(int<32> status);
+int<32> system(string command);
+int<32> rand();
+void srand(int<32> seed);
+int<32> atoi(string nptr);
+float atof(string nptr);
+int<32> abs(int<32> j);
+void* memset(void* s, int<32> c, int n);
+void* memcpy(void* dest, void* src, int n);
+void* memmove(void* dest, void* src, int n);
+int<32> memcmp(void* s1, void* s2, int n);

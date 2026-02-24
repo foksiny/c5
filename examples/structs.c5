@@ -1,0 +1,17 @@
+include <std.c5h>
+
+struct Point {
+    int<32> x;
+    int<32> y;
+};
+
+void main() {
+    Point p = {10, 20};
+
+    std::printf("(STRUCT): %d, %d\n", p.x, p.y);
+
+    p.x = 43;
+    p.y = 53;
+
+    std::printf("(STRUCT): %d, %d\n", p.x, p.y);
+}

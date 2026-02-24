@@ -1,0 +1,28 @@
+include <std.c5h>
+
+array<int<32>> ret_arr(array<int<32>> arr) {
+    arr.push(arr[arr.length() - 1] + 1);
+    return arr;
+}
+
+void main() {
+    array<int<32>> arr = ret_arr({1, 2, 3, 4, 5});
+    std::printf("arr[0]: %d\n", arr[0]);
+    std::printf("arr[1]: %d\n", arr[1]);
+    std::printf("arr[2]: %d\n", arr[2]);
+    std::printf("arr[3]: %d\n", arr[3]);
+    std::printf("arr[4]: %d\n", arr[4]);
+    std::printf("arr[5]: %d\n", arr[5]);
+
+    arr.push(7);
+    std::printf("arr[6]: %d\n", arr[6]);
+
+    int<32> x = arr.pop();
+    std::printf("x: %d\n", x);
+    std::printf("arr[5]: %d\n", arr[5]);
+
+    std::printf("len: %zu\n", arr.length());
+
+    arr.clear();
+    std::printf("len: %zu\n", arr.length());
+}

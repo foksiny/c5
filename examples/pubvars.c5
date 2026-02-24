@@ -1,0 +1,10 @@
+include <std.c5h>
+
+let int<32> pubvar = 10;
+
+void main() {
+    std::printf("%d\n", pubvar);
+
+    pubvar = 20;
+    std::printf("%d\n", pubvar);
+}

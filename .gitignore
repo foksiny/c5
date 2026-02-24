@@ -1,0 +1,4 @@
+*.s
+*.egg-info
+*/__pycache__/
+trash

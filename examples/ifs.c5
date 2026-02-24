@@ -1,0 +1,14 @@
+include <std.c5h>
+
+void main() {
+    int<32> a = 10;
+    if (a > 10) {
+        std::printf("%d\n", a);
+    }
+    else if (a == 5) {
+        std::printf("%d\n", a+1);
+    }
+    else {
+        std::printf("%d\n", a+2);
+    }
+}

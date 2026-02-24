@@ -1,0 +1,66 @@
+include <std.c5h>
+
+float<32> add_f32(float<32> a, float<32> b) {
+    return a + b;
+}
+
+int add_i(int a, int b) { // int is int64 (that's why <32> is needed to specify int32)
+    return a + b;
+}
+
+int<8> add_i8(int<8> a, int<8> b) {
+    return a + b;
+}
+
+int<16> add_i16(int<16> a, int<16> b) {
+    return a + b;
+}
+
+float add_f(float a, float b) { // float is float64 by default
+    return a + b;
+}
+
+int<32> add_i32(int<32> a, int<32> b) {
+    return a + b;
+}
+
+char show_c(char c) {
+    return c;
+}
+
+string show_s(string s) {
+    return s;
+}
+
+void main() {
+    float<32> a = 10.5;
+    float<32> b = 20.5;
+    float<32> c = add_f32(a, b);
+    std::printf("%f\n", c);
+    int x = 10;
+    int y = 20;
+    int z = add_i(x, y);
+    std::printf("%d\n", z);
+    int<8> x8 = 10;
+    int<8> y8 = 20;
+    int<8> z8 = add_i8(x8, y8);
+    std::printf("%d\n", z8);
+    int<16> x16 = 10;
+    int<16> y16 = 20;
+    int<16> z16 = add_i16(x16, y16);
+    std::printf("%d\n", z16);
+    float a2 = 10.5;
+    float b2 = 20.5;
+    float c2 = add_f(a2, b2);
+    std::printf("%f\n", c2);
+    int<32> x32 = 10;
+    int<32> y32 = 20;
+    int<32> z32 = add_i32(x32, y32);
+    std::printf("%d\n", z32);
+    char c3 = 'a';
+    char c4 = show_c(c3);
+    std::printf("%c\n", c4);
+    string s = "hello";
+    string s2 = show_s(s);
+    std::printf("%s\n", s2);
+}

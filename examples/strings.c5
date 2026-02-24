@@ -1,0 +1,12 @@
+include <std.c5h>
+
+void main() {
+    string s = "Hello";
+    std::printf("%s\n", s);
+
+    s = s + ", World!";
+    std::printf("%s\n", s);
+
+    s = s - ", World!";
+    std::printf("%s\n", s);
+}

@@ -1,0 +1,18 @@
+include <std.c5h>
+
+void main() {
+    int<32> a = 10;
+    while (a > 0) {
+        std::printf("(WHILE): %d\n", a);
+        a = a - 1;
+    }
+
+    for (int<32> i = 0; i < 10; i = i + 1) {
+        std::printf("(FOR): %d\n", i);
+    }
+
+    do {
+        std::printf("(DO-WHILE): %d\n", a);
+        a = a + 1;
+    } while (a < 10);
+}

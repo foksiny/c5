@@ -1,0 +1,12 @@
+include <std.c5h>
+
+int<32> add(int<32> a, int<32> b) {
+    return a + b;
+}
+
+void main() {
+    int<32> a = 10;
+    int<32> b = 20;
+    int<32> c = add(a, b);
+    std::printf("%d\n", c);
+}

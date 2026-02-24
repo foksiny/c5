@@ -1,0 +1,12 @@
+include <std.c5h>
+
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+
+void main() {
+    Color c = Color::RED;
+    std::printf("(ENUM): %d\n", c);
+}

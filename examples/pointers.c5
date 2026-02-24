@@ -1,0 +1,19 @@
+include <std.c5h>
+
+void main() {
+    int<32> a = 10;
+    int<32>* ptr = &a;
+    std::printf("%d\n", *ptr);
+
+    *ptr = 20;
+    std::printf("%d\n", a);
+
+    std::printf("%p\n", ptr);
+
+    change_var(ptr); // or change_var(&a);
+    std::printf("%d\n", a);
+}
+
+void change_var(int<32>* ptr) {
+    *ptr = 30;
+}

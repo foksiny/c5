@@ -1,0 +1,13 @@
+include <std.c5h>
+
+unsigned int<32> ret_u32() {
+    return 10;
+}
+
+void main() {
+    unsigned int<32> a = ret_u32();
+
+    signed char b = 'b';
+
+    std::printf("%d | %c\n", a, b);
+}

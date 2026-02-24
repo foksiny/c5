@@ -1,0 +1,44 @@
+include <std.c5h>
+
+struct Point {
+    int<32> x;
+    int<32> y;
+};
+
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+
+void main() {
+    // Array of structs
+    array<Point> points = {{1, 2}, {3, 4}, {5, 6}};
+    
+    std::printf("points[0].x: %d\n", points[0].x);
+    std::printf("points[0].y: %d\n", points[0].y);
+    std::printf("points[1].x: %d\n", points[1].x);
+    std::printf("points[1].y: %d\n", points[1].y);
+    
+    // Push a new struct
+    points.push({7, 8});
+    std::printf("points[3].x: %d\n", points[3].x);
+    std::printf("points[3].y: %d\n", points[3].y);
+    
+    // Modify a struct field in the array
+    points[0].x = 100;
+    std::printf("points[0].x after modification: %d\n", points[0].x);
+    
+    // Array of enums
+    array<Color> colors = {Color::RED, Color::GREEN, Color::BLUE};
+    
+    std::printf("colors[0]: %d\n", colors[0]);
+    std::printf("colors[1]: %d\n", colors[1]);
+    std::printf("colors[2]: %d\n", colors[2]);
+    
+    colors.push(Color::RED);
+    std::printf("colors[3]: %d\n", colors[3]);
+    
+    std::printf("len: %zu\n", points.length());
+    std::printf("len: %zu\n", colors.length());
+}

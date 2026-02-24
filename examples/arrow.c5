@@ -1,0 +1,21 @@
+include <std.c5h>
+
+struct Point {
+    int<32> x;
+    int<32> y;
+};
+
+void set_point(Point* p, int<32> x, int<32> y) {
+    p->x = x;
+    p->y = y;
+}
+
+void main() {
+    Point pt = {0, 0};
+    Point* ptr = &pt;
+
+    set_point(ptr, 42, 99);
+
+    std::printf("x = %d\n", ptr->x);
+    std::printf("y = %d\n", ptr->y);
+}
