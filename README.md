@@ -104,6 +104,7 @@ C5 supports standard C control structures:
 - `while` loops
 - `do` / `while` loops
 - `for` loops
+- `foreach` loops (for iterating over arrays)
 
 ```c
 for (int i = 0; i < 10; i = i + 1) {
@@ -112,6 +113,32 @@ for (int i = 0; i < 10; i = i + 1) {
     }
 }
 ```
+
+#### Foreach Loops
+The `foreach` loop provides a convenient way to iterate over arrays with both index and value:
+
+```c
+include <std.c5h>
+
+void main() {
+    array<int<32>> arr = {10, 20, 30, 40, 50};
+
+    foreach (i, val in arr) {
+        std::printf("arr[%d] = %d\n", i, val);
+    }
+}
+```
+
+**Syntax:** `foreach (index_var, value_var in array_expr) { body }`
+
+- `index_var`: A variable that holds the current index (0-based)
+- `value_var`: A variable that holds the current element value
+- `array_expr`: An array expression (can be a variable or function return)
+
+The `foreach` loop automatically:
+- Determines the element type from the array
+- Iterates from index 0 to length-1
+- Provides both the index and value in each iteration
 
 ### 5. Directives & Namespacing
 When you `include <std.c5h>`, all functions inside are placed in the `std::` namespace.
@@ -252,6 +279,52 @@ void main() {
 - **Expression bodies**: The last expression in the macro body becomes the result
 - **Zero overhead**: Macros are expanded at compile time, no runtime cost
 - **Type flexibility**: Macros work with any compatible types
+
+### 13. Lambda Expressions
+C5 supports lambda expressions (anonymous functions) that can be assigned to variables and called like regular functions.
+
+```c
+include <std.c5h>
+
+void main() {
+    // Define a lambda that adds two integers
+    int<32> sum = fnct(int<32> a, int<32> b) {
+        return a + b;
+    };
+
+    // Call the lambda
+    std::printf("%d\n", sum(10, 20));  // Output: 30
+}
+```
+
+**Lambda syntax:**
+```
+fnct(parameters) { body }
+```
+
+**Key features:**
+- **Anonymous functions**: Lambdas are unnamed functions that can be defined inline
+- **First-class values**: Lambdas can be assigned to variables and passed around
+- **Type inference**: The return type is inferred from the body
+- **Closures**: Lambdas capture their surrounding scope
+
+**Example with multiple lambdas:**
+```c
+include <std.c5h>
+
+void main() {
+    int<32> add = fnct(int<32> a, int<32> b) {
+        return a + b;
+    };
+    
+    int<32> mul = fnct(int<32> a, int<32> b) {
+        return a * b;
+    };
+    
+    std::printf("Add: %d\n", add(5, 3));   // Output: Add: 8
+    std::printf("Mul: %d\n", mul(5, 3));   // Output: Mul: 15
+}
+```
 
 ---
 

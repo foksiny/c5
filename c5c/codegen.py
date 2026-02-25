@@ -18,9 +18,12 @@ class CodeGen:
         self.data = []
         self.uses_str_add = False
         self.uses_str_sub = False
+        self.lambda_count = 0
+        self.lambda_funcs = []  # Store lambda function definitions
 
     def sizeof(self, ty):
         if ty.endswith('*'): return 8
+        if ty == 'fnptr': return 8  # Function pointer type
         if ty.startswith('array<'): return 24  # ptr + len + cap
         # Handle signed/unsigned types
         if ty.startswith('unsigned ') or ty.startswith('signed '):
@@ -50,6 +53,89 @@ class CodeGen:
         """Check if a type is an enum type."""
         return ty in self.enums
 
+    def _get_expr_type(self, node):
+        """Get the type of an expression node."""
+        if not node:
+            return 'void'
+        tag = node[0]
+        if tag == 'number':
+            return 'int'
+        if tag == 'float':
+            return 'float'
+        if tag == 'string':
+            return 'string'
+        if tag == 'char':
+            return 'char'
+        if tag == 'id':
+            name = node[1]
+            if name in self.local_vars:
+                return self.local_vars[name][1]
+            if name in self.global_vars:
+                return self.global_vars[name]
+            return 'int'
+        if tag == 'binop':
+            return self._get_expr_type(node[2])
+        if tag == 'unary':
+            op = node[1]
+            sub_ty = self._get_expr_type(node[2])
+            if op == '&':
+                return sub_ty + '*'
+            if op == '*':
+                return sub_ty[:-1] if sub_ty.endswith('*') else 'void'
+            return sub_ty
+        if tag == 'member_access':
+            base_ty = self._get_expr_type(node[1])
+            if base_ty.endswith('*'):
+                struct_ty = base_ty[:-1]
+                if struct_ty in self.structs:
+                    st = self.structs[struct_ty]
+                    if node[2] in st['fields']:
+                        return st['fields'][node[2]]['type']
+            if base_ty in self.structs:
+                st = self.structs[base_ty]
+                if node[2] in st['fields']:
+                    return st['fields'][node[2]]['type']
+            return 'int'
+        if tag == 'arrow_access':
+            base_ty = self._get_expr_type(node[1])
+            if base_ty.endswith('*'):
+                struct_ty = base_ty[:-1]
+                if struct_ty in self.structs:
+                    st = self.structs[struct_ty]
+                    if node[2] in st['fields']:
+                        return st['fields'][node[2]]['type']
+            return 'int'
+        if tag == 'array_access':
+            base_ty = self._get_expr_type(node[1])
+            if base_ty.startswith('array<') and base_ty.endswith('>'):
+                return base_ty[6:-1]
+            return 'int'
+        if tag == 'call':
+            target = node[1]
+            if target[0] == 'member_access':
+                method = target[2]
+                base_ty = self._get_expr_type(target[1])
+                if base_ty.startswith('array<'):
+                    if method == 'length':
+                        return 'int'
+                    if method == 'pop':
+                        return base_ty[6:-1]
+                return 'void'
+            name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
+            if name in self.func_signatures:
+                return self.func_signatures[name]
+            return 'int'
+        if tag == 'namespace_access':
+            name = f"{node[1]}::{node[2]}"
+            if name in self.func_signatures:
+                return self.func_signatures[name]
+            return 'int'
+        if tag == 'init_list':
+            # For init_list, we need context to determine the type
+            # Return 'unknown' for now - caller should handle this
+            return 'unknown'
+        return 'int'
+
     def get_string_label(self, val):
         if val in self.string_literals:
             return self.string_literals[val]
@@ -77,7 +163,9 @@ class CodeGen:
     def get_lvalue(self, node):
         if node[0] == 'id':
             if node[1] in self.local_vars:
-                offset, ty = self.local_vars[node[1]]
+                var_info = self.local_vars[node[1]]
+                offset = var_info[0]
+                ty = var_info[1]
                 return f"{offset}(%rbp)", ty
             if node[1] in self.global_vars:
                 ty = self.global_vars[node[1]]
@@ -200,6 +288,10 @@ class CodeGen:
         out.append(".text")
         out.extend(self.optimizer.optimize_asm(self.text) if self.optimizer else self.text)
         
+        # Emit lambda functions
+        for lambda_text in self.lambda_funcs:
+            out.extend(self.optimizer.optimize_asm(lambda_text) if self.optimizer else lambda_text)
+        
         if self.uses_str_add:
             out.append(self._get_str_add_asm())
         if self.uses_str_sub:
@@ -297,6 +389,8 @@ __c5_str_sub:
         _, ty, name, params, body = node
         self.local_vars = {}
         self.local_var_offset = 0
+        self.current_func_ret_ty = ty  # Store return type for struct returns
+        self.func_has_return = False  # Track if function has a return statement
         
         self.text.append(f".global {name}")
         self.text.append(f".type {name}, @function")
@@ -309,6 +403,14 @@ __c5_str_sub:
         float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
         int_idx = 0
         float_idx = 0
+        
+        # For struct returns, the caller passes a hidden pointer as first arg
+        if ty in self.structs:
+            self.local_var_offset -= 8
+            self.local_vars['__ret_ptr'] = (self.local_var_offset, ty + '*')
+            reg = int_regs[int_idx]
+            int_idx += 1
+            self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
         
         for p in params:
             pty, pname = p
@@ -341,24 +443,34 @@ __c5_str_sub:
         for stmt in body:
             self.gen_stmt(stmt)
             
-        if name == "main":
-            self.text.append("    mov $0, %eax")
+        # Only add default return if no return statement was generated
+        if not self.func_has_return:
+            if name == "main":
+                self.text.append("    mov $0, %eax")
 
-        self.text.append("    leave")
-        self.text.append("    ret")
+            self.text.append("    leave")
+            self.text.append("    ret")
 
     def gen_stmt(self, node):
         if node[0] == 'expr_stmt':
             self.gen_expr(node[1])
         elif node[0] == 'var_decl':
             _, ty, name, init_expr = node
-            sz = self.sizeof(ty)
+            # Check if init expression is a lambda - use 8 bytes for function pointer
+            if init_expr and init_expr[0] == 'lambda':
+                sz = 8  # Function pointer size
+            else:
+                sz = self.sizeof(ty)
             align = sz if sz < 8 else 8
             align = 8 if align == 8 else align
             if abs(self.local_var_offset) % align != 0:
                 self.local_var_offset -= align - (abs(self.local_var_offset) % align)
             self.local_var_offset -= sz
             self.local_vars[name] = (self.local_var_offset, ty)
+            
+            # For lambdas, store the expected return type for proper code generation
+            if init_expr and init_expr[0] == 'lambda':
+                self.local_vars[name] = (self.local_var_offset, ty, True)  # Mark as lambda var
             
             # Zero-initialize arrays when declared without initializer
             if ty.startswith('array<') and not init_expr:
@@ -368,6 +480,10 @@ __c5_str_sub:
                 self.text.append(f"    movq $0, {base_off+16}(%rbp)")    # capacity = 0
             
             if init_expr:
+                # Set expected return type for lambda expressions
+                if init_expr[0] == 'lambda':
+                    self.lambda_ret_type = ty
+                
                 if init_expr[0] == 'init_list':
                     if ty.startswith('array<'):
                         # Array init from init_list: allocate, set len/cap, copy data
@@ -447,7 +563,24 @@ __c5_str_sub:
                                     self.text.append(f"    mov %rax, {foffset}(%rbp)")
                 else:
                     ret_ty = self.gen_expr(init_expr)
-                    if ty.startswith('float'):
+                    if ret_ty == 'fnptr':
+                        # Lambda expression - always store as 8-byte pointer
+                        self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                        # Clean up lambda return type
+                        if hasattr(self, 'lambda_ret_type'):
+                            delattr(self, 'lambda_ret_type')
+                    elif ret_ty and ret_ty.endswith('*') and ret_ty[:-1] in self.structs and not ty.endswith('*'):
+                        # Function returns a struct pointer - copy to variable
+                        # But only if the declared type is NOT a pointer (i.e., we want the struct value)
+                        struct_ty = ret_ty[:-1]
+                        st_sz = self.sizeof(struct_ty)
+                        # ret_ty is a pointer to the struct in %rax
+                        # Copy from %rax to local_var_offset
+                        self.text.append("    mov %rax, %rsi")  # src
+                        self.text.append(f"    lea {self.local_var_offset}(%rbp), %rdi")  # dest
+                        self.text.append(f"    mov ${st_sz}, %rdx")
+                        self.text.append("    call memcpy@PLT")
+                    elif ty.startswith('float'):
                         if ty == 'float<32>':
                             if ret_ty == 'float' or ret_ty == 'float<64>':
                                 self.text.append("    cvtsd2ss %xmm0, %xmm0")
@@ -473,11 +606,14 @@ __c5_str_sub:
                         else:
                             self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
         elif node[0] == 'return_stmt':
+            self.func_has_return = True
             if node[1]:
                 ret_expr = node[1]
                 # Check if we're returning an array variable
                 if ret_expr[0] == 'id' and ret_expr[1] in self.local_vars:
-                    off, vty = self.local_vars[ret_expr[1]]
+                    var_info = self.local_vars[ret_expr[1]]
+                    off = var_info[0]
+                    vty = var_info[1]
                     if vty.startswith('array<'):
                         self.text.append(f"    mov {off}(%rbp), %rax")       # data ptr
                         self.text.append(f"    mov {off+8}(%rbp), %rdx")     # length
@@ -485,6 +621,61 @@ __c5_str_sub:
                         self.text.append("    leave")
                         self.text.append("    ret")
                         return
+                
+                # Check if returning a struct - use function's return type
+                func_ret_ty = getattr(self, 'current_func_ret_ty', 'int')
+                if func_ret_ty in self.structs:
+                    # Get the hidden return pointer
+                    ret_ptr_off = self.local_vars['__ret_ptr'][0]
+                    self.text.append(f"    mov {ret_ptr_off}(%rbp), %r11")  # dest ptr in r11
+                    
+                    if ret_expr[0] == 'init_list':
+                        # Initialize struct fields directly at the return pointer
+                        st = self.structs[func_ret_ty]
+                        field_list = list(st['fields'].items())
+                        for i, fval in enumerate(ret_expr[1]):
+                            fname, finfo = field_list[i]
+                            self.gen_expr(fval)
+                            foff = finfo['offset']
+                            if finfo['type'].startswith('float'):
+                                if finfo['type'] == 'float<32>':
+                                    self.text.append(f"    movss %xmm0, {foff}(%r11)")
+                                else:
+                                    self.text.append(f"    movsd %xmm0, {foff}(%r11)")
+                            else:
+                                fsz = self.sizeof(finfo['type'])
+                                if fsz == 1:
+                                    self.text.append(f"    mov %al, {foff}(%r11)")
+                                elif fsz == 2:
+                                    self.text.append(f"    mov %ax, {foff}(%r11)")
+                                elif fsz == 4:
+                                    self.text.append(f"    mov %eax, {foff}(%r11)")
+                                else:
+                                    self.text.append(f"    mov %rax, {foff}(%r11)")
+                    elif ret_expr[0] == 'id' and ret_expr[1] in self.local_vars:
+                        # Copy struct variable to return location
+                        src_off = self.local_vars[ret_expr[1]][0]
+                        st_sz = self.sizeof(func_ret_ty)
+                        # Use memcpy for the copy
+                        self.text.append(f"    lea {src_off}(%rbp), %rsi")  # src
+                        self.text.append("    mov %r11, %rdi")  # dest
+                        self.text.append(f"    mov ${st_sz}, %rdx")
+                        self.text.append("    call memcpy@PLT")
+                    else:
+                        # General expression - evaluate and copy
+                        # The expression should return a pointer to the struct
+                        self.gen_expr(ret_expr)
+                        # rax now contains pointer to source struct
+                        st_sz = self.sizeof(func_ret_ty)
+                        self.text.append("    mov %r11, %rdi")  # dest
+                        self.text.append("    mov %rax, %rsi")  # src
+                        self.text.append(f"    mov ${st_sz}, %rdx")
+                        self.text.append("    call memcpy@PLT")
+                    
+                    self.text.append("    leave")
+                    self.text.append("    ret")
+                    return
+                
                 self.gen_expr(ret_expr)
             self.text.append("    leave")
             self.text.append("    ret")
@@ -526,6 +717,87 @@ __c5_str_sub:
             for stmt in body:
                 self.gen_stmt(stmt)
             self.gen_expr(inc)
+            self.text.append(f"    jmp {cond_label}")
+            self.text.append(f"{end_label}:")
+        elif node[0] == 'foreach_stmt':
+            # foreach (index_var, value_var in array_expr) { body }
+            index_var, value_var, array_expr, body = node[1], node[2], node[3], node[4]
+            
+            self.label_count += 1
+            cond_label = f".Lforeach_cond_{self.label_count}"
+            end_label = f".Lforeach_end_{self.label_count}"
+            
+            # Get array type and element size
+            array_ty = self._get_expr_type(array_expr)
+            elem_ty = 'int'
+            if array_ty.startswith('array<') and array_ty.endswith('>'):
+                elem_ty = array_ty[6:-1]
+            elem_sz = self.sizeof(elem_ty)
+            
+            # Check if array_expr is a simple variable reference
+            if array_expr[0] == 'id' and array_expr[1] in self.local_vars:
+                # Use the existing array variable directly
+                array_off = self.local_vars[array_expr[1]][0]
+            else:
+                # Allocate the array variable if it's an expression
+                # Store array in a local variable (ptr, len, cap)
+                self.local_var_offset -= 24
+                array_off = self.local_var_offset
+                
+                # Evaluate array expression and store it
+                self.gen_expr(array_expr)
+                self.text.append(f"    mov %rax, {array_off}(%rbp)")       # data ptr
+                self.text.append(f"    mov %rdx, {array_off+8}(%rbp)")     # length
+                self.text.append(f"    mov %rcx, {array_off+16}(%rbp)")    # capacity
+            
+            # Allocate index variable (init to 0)
+            self.local_var_offset -= 8
+            index_off = self.local_var_offset
+            self.local_vars[index_var] = (index_off, 'int')
+            self.text.append(f"    movq $0, {index_off}(%rbp)")
+            
+            # Allocate value variable
+            self.local_var_offset -= 8
+            value_off = self.local_var_offset
+            self.local_vars[value_var] = (value_off, elem_ty)
+            
+            # Loop: while (index < array.length)
+            self.text.append(f"{cond_label}:")
+            # Load index
+            self.text.append(f"    mov {index_off}(%rbp), %rax")
+            # Load array length
+            self.text.append(f"    mov {array_off+8}(%rbp), %rcx")
+            # Compare index < length
+            self.text.append("    cmp %rcx, %rax")
+            self.text.append(f"    jge {end_label}")
+            
+            # Load value = array[index]
+            # Load data pointer
+            self.text.append(f"    mov {array_off}(%rbp), %r11")
+            # Calculate offset: index * elem_sz
+            self.text.append(f"    mov {index_off}(%rbp), %rax")
+            self.text.append(f"    imul ${elem_sz}, %rax")
+            self.text.append("    add %rax, %r11")
+            # Load element at r11 into value variable
+            if elem_sz == 1:
+                self.text.append(f"    movzbq (%r11), %rax")
+                self.text.append(f"    mov %al, {value_off}(%rbp)")
+            elif elem_sz == 2:
+                self.text.append(f"    movzwq (%r11), %rax")
+                self.text.append(f"    mov %ax, {value_off}(%rbp)")
+            elif elem_sz == 4:
+                self.text.append(f"    movl (%r11), %eax")
+                self.text.append(f"    mov %eax, {value_off}(%rbp)")
+            else:
+                self.text.append(f"    movq (%r11), %rax")
+                self.text.append(f"    mov %rax, {value_off}(%rbp)")
+            
+            # Execute body
+            for stmt in body:
+                self.gen_stmt(stmt)
+            
+            # Increment index
+            self.text.append(f"    incq {index_off}(%rbp)")
             self.text.append(f"    jmp {cond_label}")
             self.text.append(f"{end_label}:")
         elif node[0] == 'if_stmt':
@@ -575,6 +847,92 @@ __c5_str_sub:
                 return "int"
             else:
                 raise Exception(f"Unknown namespace access: {base}::{name}")
+        elif node[0] == 'lambda':
+            # Lambda expression: generate a unique function and return its address
+            params, body = node[1], node[2]
+            self.lambda_count += 1
+            lambda_name = f"__lambda_{self.lambda_count}"
+            
+            # Get expected return type from context (passed via lambda_ret_type attribute)
+            lambda_ret_ty = getattr(self, 'lambda_ret_type', 'int')
+            
+            # Store current state
+            saved_local_vars = self.local_vars.copy()
+            saved_local_var_offset = self.local_var_offset
+            saved_text = self.text
+            saved_func_ret_ty = getattr(self, 'current_func_ret_ty', 'int')
+            saved_func_has_return = getattr(self, 'func_has_return', False)
+            
+            # Generate lambda function
+            self.local_vars = {}
+            self.local_var_offset = 0
+            self.func_has_return = False
+            lambda_text = []
+            
+            self.current_func_ret_ty = lambda_ret_ty
+            
+            lambda_text.append(f".global {lambda_name}")
+            lambda_text.append(f".type {lambda_name}, @function")
+            lambda_text.append(f"{lambda_name}:")
+            lambda_text.append("    push %rbp")
+            lambda_text.append("    mov %rsp, %rbp")
+            lambda_text.append("    sub $512, %rsp")
+            
+            int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
+            float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
+            int_idx = 0
+            float_idx = 0
+            
+            # For struct returns, the caller passes a hidden pointer as first arg
+            if lambda_ret_ty in self.structs:
+                self.local_var_offset -= 8
+                self.local_vars['__ret_ptr'] = (self.local_var_offset, lambda_ret_ty + '*')
+                reg = int_regs[int_idx]
+                int_idx += 1
+                lambda_text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+            
+            for pty, pname in params:
+                if pty.startswith('float'):
+                    self.local_var_offset -= 8
+                    self.local_vars[pname] = (self.local_var_offset, pty)
+                    reg = float_regs[float_idx]
+                    float_idx += 1
+                    if pty == 'float<32>':
+                        lambda_text.append(f"    movss {reg}, {self.local_var_offset}(%rbp)")
+                    else:
+                        lambda_text.append(f"    movsd {reg}, {self.local_var_offset}(%rbp)")
+                else:
+                    self.local_var_offset -= 8
+                    self.local_vars[pname] = (self.local_var_offset, pty)
+                    reg = int_regs[int_idx]
+                    int_idx += 1
+                    lambda_text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+            
+            # Generate body
+            self.text = lambda_text
+            for stmt in body:
+                self.gen_stmt(stmt)
+            lambda_text = self.text
+            
+            # Add implicit return 0 if no return statement
+            if not self.func_has_return:
+                lambda_text.append("    mov $0, %eax")
+                lambda_text.append("    leave")
+                lambda_text.append("    ret")
+            
+            # Store lambda function for later emission
+            self.lambda_funcs.append(lambda_text)
+            
+            # Restore state
+            self.local_vars = saved_local_vars
+            self.local_var_offset = saved_local_var_offset
+            self.text = saved_text
+            self.current_func_ret_ty = saved_func_ret_ty
+            self.func_has_return = saved_func_has_return
+            
+            # Load lambda function address
+            self.text.append(f"    lea {lambda_name}(%rip), %rax")
+            return "fnptr"
         elif node[0] == 'unary':
             op, target = node[1], node[2]
             if op == '&':
@@ -1107,16 +1465,28 @@ __c5_str_sub:
             
             func_name = ""
             full_func_name = ""
+            is_func_ptr_call = False
+            func_ptr_ret_ty = None  # Track return type for function pointers
+            
             if target[0] == 'namespace_access':
                 full_func_name = f"{target[1]}::{target[2]}"
                 func_name = target[2]
             elif target[0] == 'id':
                 func_name = target[1]
                 full_func_name = func_name
+                # Check if this is a function pointer variable (lambda)
+                if func_name in self.local_vars:
+                    var_info = self.local_vars[func_name]
+                    # Check if it's a lambda variable (tuple with 3 elements)
+                    if len(var_info) >= 3 and var_info[2] == True:
+                        func_ptr_ret_ty = var_info[1]  # Get the return type
+                    is_func_ptr_call = True
             
-            # Check if the function returns an array type
+            # Check if the function returns an array or struct type
             ret_ty = "int"
-            if full_func_name in self.func_signatures:
+            if is_func_ptr_call and func_ptr_ret_ty:
+                ret_ty = func_ptr_ret_ty
+            elif full_func_name in self.func_signatures:
                 ret_ty = self.func_signatures[full_func_name]
             elif func_name in self.func_signatures:
                 ret_ty = self.func_signatures[func_name]
@@ -1127,8 +1497,18 @@ __c5_str_sub:
             elif func_name in self.extern_funcs and self.extern_funcs[func_name]['varargs']:
                 is_vararg = True
             
+            # For struct returns, allocate space on stack for the return value BEFORE pushing args
+            # This way the struct space will be at the bottom of the stack after all pops
+            if ret_ty in self.structs:
+                st_sz = self.sizeof(ret_ty)
+                # Align to 16 bytes
+                if st_sz % 16 != 0:
+                    st_sz += 16 - (st_sz % 16)
+                self.text.append(f"    sub ${st_sz}, %rsp")
+            
             # For array arguments, pass the 3 fields (ptr, len, cap)
             arg_types = []
+            
             for arg in args:
                 if arg[0] == 'init_list':
                     # Inline init_list passed as function arg: create temp array
@@ -1185,7 +1565,9 @@ __c5_str_sub:
                     elif ty.startswith('array<'):
                         # Push array fields in LIFO order: cap, len, ptr
                         if arg[0] == 'id' and arg[1] in self.local_vars:
-                            aoff, aty = self.local_vars[arg[1]]
+                            var_info = self.local_vars[arg[1]]
+                            aoff = var_info[0]
+                            aty = var_info[1]
                             self.text.append(f"    pushq {aoff+16}(%rbp)")  # cap (popped last)
                             self.text.append(f"    pushq {aoff+8}(%rbp)")   # len (popped 2nd)
                             self.text.append(f"    pushq {aoff}(%rbp)")     # ptr (popped 1st)
@@ -1199,7 +1581,7 @@ __c5_str_sub:
             float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
             
             # For arrays, we need 3 int regs per array arg
-            # Count how many int regs we need
+            # Count how many int regs we need for actual args
             int_slots = 0
             float_slots = 0
             for ty in arg_types:
@@ -1210,7 +1592,11 @@ __c5_str_sub:
                 else:
                     int_slots += 1
             
-            int_idx = int_slots - 1
+            # For struct returns, args start from %rsi (skip %rdi for hidden pointer)
+            # So we need to shift register indices
+            reg_offset = 1 if ret_ty in self.structs else 0
+            
+            int_idx = int_slots - 1 + reg_offset
             float_idx = float_slots - 1
             
             for ty in reversed(arg_types):
@@ -1240,10 +1626,30 @@ __c5_str_sub:
                     int_idx -= 1
                     self.text.append(f"    pop {reg}")
 
+            # For struct returns, load hidden pointer into %rdi
+            if ret_ty in self.structs:
+                self.text.append(f"    mov %rsp, %rdi")  # Hidden pointer in %rdi
+
             if is_vararg:
                 float_count = len([ty for ty in arg_types if ty.startswith('float')])
                 self.text.append(f"    mov ${float_count}, %eax")
-                
-            self.text.append(f"    call {func_name}@PLT")
+            
+            if is_func_ptr_call:
+                # Load function pointer from variable and call through it
+                offset = self.local_vars[func_name][0]
+                self.text.append(f"    mov {offset}(%rbp), %r11")
+                self.text.append("    call *%r11")
+            else:
+                self.text.append(f"    call {func_name}@PLT")
+            
+            # For struct returns, the result is in the hidden pointer location
+            # Return pointer to the struct in rax
+            if ret_ty in self.structs:
+                st_sz = self.sizeof(ret_ty)
+                # Align to 16 bytes
+                if st_sz % 16 != 0:
+                    st_sz += 16 - (st_sz % 16)
+                self.text.append("    mov %rsp, %rax")  # Return pointer to struct on stack
+                return ret_ty + '*'  # Return as pointer type
             
             return ret_ty

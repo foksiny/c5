@@ -1,0 +1,12 @@
+include <std.c5h>
+
+void main() {
+    array<int<32>> arr;
+
+    arr.push(10);
+    arr.push(20);
+
+    foreach (i, val in arr) {
+        std::printf("arr[%d] = %d\n", i, val);
+    }
+}

@@ -1,0 +1,9 @@
+include <std.c5h>
+
+void main() {
+    int<32> sum = fnct(int<32> a, int<32> b) {
+        return a + b;
+    };
+
+    std::printf("%d\n", sum(10, 20));
+}

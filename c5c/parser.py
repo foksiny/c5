@@ -280,6 +280,23 @@ class Parser:
         self.consume('RBRACE')
         return ('for_stmt', init, cond, inc, body, loc)
 
+    def parse_foreach_stmt(self):
+        loc = self._loc()
+        self.consume('FOREACH')
+        self.consume('LPAREN')
+        index_var = self.consume('ID').value
+        self.consume('COMMA')
+        value_var = self.consume('ID').value
+        self.consume('IN')
+        array_expr = self.parse_expr()
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        body = []
+        while self.peek().type != 'RBRACE':
+            body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        return ('foreach_stmt', index_var, value_var, array_expr, body, loc)
+
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
@@ -287,6 +304,8 @@ class Parser:
             return self.parse_while_stmt()
         if self.peek().type == 'FOR':
             return self.parse_for_stmt()
+        if self.peek().type == 'FOREACH':
+            return self.parse_foreach_stmt()
         if self.peek().type == 'DO':
             return self.parse_do_while_stmt()
         
@@ -412,6 +431,27 @@ class Parser:
             target = ('char', self.consume('CHAR').value, loc)
         elif self.peek().type == 'STRING':
             target = ('string', self.consume('STRING').value, loc)
+        elif self.peek().type == 'FNCT':
+            # Lambda expression: fnct(params) { body }
+            self.consume('FNCT')
+            self.consume('LPAREN')
+            params = []
+            if self.peek().type != 'RPAREN':
+                while True:
+                    pty = self.parse_type()
+                    pname = self.consume('ID').value
+                    params.append((pty, pname))
+                    if self.peek().type == 'COMMA':
+                        self.consume('COMMA')
+                    else:
+                        break
+            self.consume('RPAREN')
+            self.consume('LBRACE')
+            body = []
+            while self.peek().type != 'RBRACE':
+                body.append(self.parse_stmt())
+            self.consume('RBRACE')
+            target = ('lambda', params, body, loc)
         elif self.peek().type == 'ID':
             base = self.consume('ID').value
             if self.peek().type == 'COLONCOLON':

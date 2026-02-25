@@ -255,13 +255,23 @@ class SemanticAnalyzer:
             else:
                 name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
 
-                if name not in self.functions:
-                    self.add_error("E005", name, loc)
-                else:
-                    self.used_funcs.add(name)
-                    ret, min_args, is_varargs, _ = self.functions[name]
-                    if len(args) < min_args: self.add_error("E011", f"'{name}' expects at least {min_args}", loc)
-                    elif not is_varargs and len(args) > min_args: self.add_error("E011", f"'{name}'", loc)
+                # Check if this is a function pointer variable (lambda)
+                is_func_ptr = False
+                if target[0] == 'id':
+                    for scope in self.scopes:
+                        if name in scope:
+                            is_func_ptr = True
+                            self.used_vars.add(name)
+                            break
+                
+                if not is_func_ptr:
+                    if name not in self.functions:
+                        self.add_error("E005", name, loc)
+                    else:
+                        self.used_funcs.add(name)
+                        ret, min_args, is_varargs, _ = self.functions[name]
+                        if len(args) < min_args: self.add_error("E011", f"'{name}' expects at least {min_args}", loc)
+                        elif not is_varargs and len(args) > min_args: self.add_error("E011", f"'{name}'", loc)
                 for a in args: self._analyze_node(a)
 
         elif tag == 'func':
@@ -311,12 +321,55 @@ class SemanticAnalyzer:
             self._analyze_node(node[1])
             self._analyze_node(node[2])
 
+        elif tag == 'foreach_stmt':
+            # foreach (index_var, value_var in array_expr) { body }
+            index_var, value_var, array_expr, body = node[1], node[2], node[3], node[4]
+            
+            # Analyze the array expression
+            self._analyze_node(array_expr)
+            
+            # Get the element type from the array
+            array_ty = self._get_type(array_expr)
+            elem_ty = 'int'  # default
+            if array_ty.startswith('array<') and array_ty.endswith('>'):
+                elem_ty = array_ty[6:-1]
+            
+            # Add index and value variables to a new scope
+            self.scopes.append({})
+            self.scopes[-1][index_var] = 'int'
+            self.scopes[-1][value_var] = elem_ty
+            self.var_locs[index_var] = loc
+            self.var_locs[value_var] = loc
+            
+            # Analyze body
+            for s in body:
+                self._analyze_node(s)
+            
+            # Pop scope
+            self.scopes.pop()
+
         elif tag in ('expr_stmt', 'return_stmt', 'while_stmt', 'for_stmt', 'do_while_stmt'):
              for child in node[1:]:
                  if isinstance(child, (tuple, list)):
                      if isinstance(child, list):
                          for i in child: self._analyze_node(i)
                      else: self._analyze_node(child)
+        
+        elif tag == 'lambda':
+            # Lambda expression: create a new scope for parameters and analyze body
+            params, body = node[1], node[2]
+            self.scopes.append({})
+            for pty, pname in params:
+                self.scopes[-1][pname] = pty
+                self.var_locs[pname] = loc
+            for s in body:
+                self._analyze_node(s)
+            self.scopes.pop()
+        
+        elif tag == 'init_list':
+            # Initializer list: analyze all elements
+            for elem in node[1]:
+                self._analyze_node(elem)
 
     def _scan_declarations(self, ast):
         target = ast
