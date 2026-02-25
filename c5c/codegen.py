@@ -260,7 +260,10 @@ class CodeGen:
                 sz = self.sizeof(ty)
                 self.data.append(f".global {name}")
                 self.data.append(f"{name}:")
-                if init[0] == 'number':
+                if init is None:
+                    # Zero initialization for global variables without initializer
+                    self.data.append(f"    .zero {sz}")
+                elif init[0] == 'number':
                     if sz == 1: self.data.append(f"    .byte {init[1]}")
                     elif sz == 2: self.data.append(f"    .short {init[1]}")
                     elif sz == 4: self.data.append(f"    .long {init[1]}")
@@ -424,6 +427,47 @@ __c5_str_sub:
                 self.text.append(f"    mov {reg_ptr}, {self.local_var_offset}(%rbp)")      # data ptr
                 self.text.append(f"    mov {reg_len}, {self.local_var_offset+8}(%rbp)")     # length
                 self.text.append(f"    mov {reg_cap}, {self.local_var_offset+16}(%rbp)")    # capacity
+            elif pty in self.structs:
+                # Struct parameter: pass in registers if <= 16 bytes, otherwise by pointer
+                st = self.structs[pty]
+                st_sz = st['size']
+                self.local_var_offset -= st_sz
+                # Align to 8 bytes
+                if abs(self.local_var_offset) % 8 != 0:
+                    self.local_var_offset -= 8 - (abs(self.local_var_offset) % 8)
+                self.local_vars[pname] = (self.local_var_offset, pty)
+                
+                if st_sz <= 16:
+                    # Pass in up to 2 registers
+                    # Copy first 8 bytes from first register
+                    reg1 = int_regs[int_idx]
+                    int_idx += 1
+                    self.text.append(f"    mov {reg1}, {self.local_var_offset}(%rbp)")
+                    if st_sz > 8:
+                        # Copy second 8 bytes from second register
+                        reg2 = int_regs[int_idx]
+                        int_idx += 1
+                        self.text.append(f"    mov {reg2}, {self.local_var_offset+8}(%rbp)")
+                else:
+                    # Passed by pointer - copy from pointer to local storage
+                    reg_ptr = int_regs[int_idx]
+                    int_idx += 1
+                    self.text.append(f"    mov {reg_ptr}, %r11")  # Save pointer
+                    # Copy struct data from pointer to local storage
+                    for copy_off in range(0, st_sz, 8):
+                        remaining = st_sz - copy_off
+                        if remaining >= 8:
+                            self.text.append(f"    mov {copy_off}(%r11), %rax")
+                            self.text.append(f"    mov %rax, {self.local_var_offset+copy_off}(%rbp)")
+                        elif remaining >= 4:
+                            self.text.append(f"    movl {copy_off}(%r11), %eax")
+                            self.text.append(f"    movl %eax, {self.local_var_offset+copy_off}(%rbp)")
+                        elif remaining >= 2:
+                            self.text.append(f"    movw {copy_off}(%r11), %ax")
+                            self.text.append(f"    movw %ax, {self.local_var_offset+copy_off}(%rbp)")
+                        else:
+                            self.text.append(f"    movb {copy_off}(%r11), %al")
+                            self.text.append(f"    movb %al, {self.local_var_offset+copy_off}(%rbp)")
             elif pty.startswith('float'):
                 self.local_var_offset -= 8
                 self.local_vars[pname] = (self.local_var_offset, pty)
@@ -734,10 +778,20 @@ __c5_str_sub:
                 elem_ty = array_ty[6:-1]
             elem_sz = self.sizeof(elem_ty)
             
+            # Check if element type is a struct
+            is_struct = elem_ty in self.structs
+            
             # Check if array_expr is a simple variable reference
+            is_global_array = False
             if array_expr[0] == 'id' and array_expr[1] in self.local_vars:
-                # Use the existing array variable directly
+                # Use the existing local array variable directly
                 array_off = self.local_vars[array_expr[1]][0]
+            elif array_expr[0] == 'id' and array_expr[1] in self.global_vars:
+                # Global array - load address into r12
+                is_global_array = True
+                array_name = array_expr[1]
+                self.text.append(f"    lea {array_name}(%rip), %r12")
+                array_off = None  # Not used for global arrays
             else:
                 # Allocate the array variable if it's an expression
                 # Store array in a local variable (ptr, len, cap)
@@ -750,14 +804,27 @@ __c5_str_sub:
                 self.text.append(f"    mov %rdx, {array_off+8}(%rbp)")     # length
                 self.text.append(f"    mov %rcx, {array_off+16}(%rbp)")    # capacity
             
+            # Helper to access array fields
+            def arr_field(off):
+                if is_global_array:
+                    return f"{off}(%r12)"
+                else:
+                    return f"{array_off+off}(%rbp)"
+            
             # Allocate index variable (init to 0)
             self.local_var_offset -= 8
             index_off = self.local_var_offset
             self.local_vars[index_var] = (index_off, 'int')
             self.text.append(f"    movq $0, {index_off}(%rbp)")
             
-            # Allocate value variable
-            self.local_var_offset -= 8
+            # Allocate value variable - use actual element size for structs
+            if is_struct:
+                # Align to 8 bytes
+                if abs(self.local_var_offset) % 8 != 0:
+                    self.local_var_offset -= 8 - (abs(self.local_var_offset) % 8)
+                self.local_var_offset -= elem_sz
+            else:
+                self.local_var_offset -= 8
             value_off = self.local_var_offset
             self.local_vars[value_var] = (value_off, elem_ty)
             
@@ -766,20 +833,27 @@ __c5_str_sub:
             # Load index
             self.text.append(f"    mov {index_off}(%rbp), %rax")
             # Load array length
-            self.text.append(f"    mov {array_off+8}(%rbp), %rcx")
+            self.text.append(f"    mov {arr_field(8)}, %rcx")
             # Compare index < length
             self.text.append("    cmp %rcx, %rax")
             self.text.append(f"    jge {end_label}")
             
             # Load value = array[index]
             # Load data pointer
-            self.text.append(f"    mov {array_off}(%rbp), %r11")
+            self.text.append(f"    mov {arr_field(0)}, %r11")
             # Calculate offset: index * elem_sz
             self.text.append(f"    mov {index_off}(%rbp), %rax")
             self.text.append(f"    imul ${elem_sz}, %rax")
             self.text.append("    add %rax, %r11")
+            
             # Load element at r11 into value variable
-            if elem_sz == 1:
+            if is_struct:
+                # Use memcpy for struct types
+                self.text.append(f"    lea {value_off}(%rbp), %rdi")  # dest
+                self.text.append("    mov %r11, %rsi")  # src
+                self.text.append(f"    mov ${elem_sz}, %rdx")  # size
+                self.text.append("    call memcpy@PLT")
+            elif elem_sz == 1:
                 self.text.append(f"    movzbq (%r11), %rax")
                 self.text.append(f"    mov %al, {value_off}(%rbp)")
             elif elem_sz == 2:
@@ -1159,8 +1233,66 @@ __c5_str_sub:
                         self.text.append(f"    mov %rax, {addr}")
                 return ty_r
 
-            ty_r = self.gen_expr(right)
+            # Check if left side is a struct type
             addr, ty_l = self.get_lvalue(left)
+            is_struct = ty_l in self.structs
+            
+            if is_struct:
+                # For struct assignment, use memcpy
+                if right[0] == 'init_list':
+                    # Struct initializer: create temp struct on stack
+                    st = self.structs[ty_l]
+                    st_sz = self.sizeof(ty_l)
+                    self.text.append(f"    sub ${st_sz}, %rsp")
+                    field_list = list(st['fields'].items())
+                    for fi, fval in enumerate(right[1]):
+                        fname, finfo = field_list[fi]
+                        self.gen_expr(fval)
+                        foff = finfo['offset']
+                        if finfo['type'].startswith('float'):
+                            if finfo['type'] == 'float<32>':
+                                self.text.append(f"    movss %xmm0, {foff}(%rsp)")
+                            else:
+                                self.text.append(f"    movsd %xmm0, {foff}(%rsp)")
+                        else:
+                            fsz = self.sizeof(finfo['type'])
+                            if fsz == 1:
+                                self.text.append(f"    mov %al, {foff}(%rsp)")
+                            elif fsz == 2:
+                                self.text.append(f"    mov %ax, {foff}(%rsp)")
+                            elif fsz == 4:
+                                self.text.append(f"    mov %eax, {foff}(%rsp)")
+                            else:
+                                self.text.append(f"    mov %rax, {foff}(%rsp)")
+                    self.text.append("    mov %rsp, %rsi")  # src
+                    # Get dest address
+                    if '(%rbp)' in addr:
+                        off = int(addr.split('(')[0])
+                        self.text.append(f"    lea {off}(%rbp), %rdi")
+                    else:
+                        self.text.append(f"    lea {addr}, %rdi")
+                    self.text.append(f"    mov ${st_sz}, %rdx")
+                    self.text.append("    call memcpy@PLT")
+                    self.text.append(f"    add ${st_sz}, %rsp")
+                else:
+                    # Assign from another struct variable
+                    src_addr, src_ty = self.get_lvalue(right)
+                    if '(%rbp)' in src_addr:
+                        src_off = int(src_addr.split('(')[0])
+                        self.text.append(f"    lea {src_off}(%rbp), %rsi")
+                    else:
+                        self.text.append(f"    lea {src_addr}, %rsi")
+                    # Get dest address
+                    if '(%rbp)' in addr:
+                        off = int(addr.split('(')[0])
+                        self.text.append(f"    lea {off}(%rbp), %rdi")
+                    else:
+                        self.text.append(f"    lea {addr}, %rdi")
+                    self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
+                    self.text.append("    call memcpy@PLT")
+                return ty_l
+            
+            ty_r = self.gen_expr(right)
             fsz = self.sizeof(ty_l)
             if ty_l.startswith('float'):
                 if ty_l == 'float<32>':
@@ -1312,10 +1444,22 @@ __c5_str_sub:
                 if base_ty.startswith('array<'):
                     elem_ty = self.array_elem_type(base_ty)
                     elem_sz = self.sizeof(elem_ty)
+                    is_global = False
                     if '(%rbp)' in base_addr:
                         base_off = int(base_addr.split('(')[0])
+                    elif '(%rip)' in base_addr:
+                        # Global array: load address into r12 and use that as base
+                        is_global = True
+                        self.text.append(f"    lea {base_addr}, %r12")
                     else:
-                        raise Exception("Arrays must be local variables")
+                        raise Exception("Arrays must be local or global variables")
+                    
+                    # Helper to generate array field access
+                    def arr_ref(off):
+                        if is_global:
+                            return f"{off}(%r12)"
+                        else:
+                            return f"{base_off+off}(%rbp)"
                     
                     if method == 'push':
                         # For struct types, we need special handling
@@ -1370,11 +1514,11 @@ __c5_str_sub:
                         # Check if we need to grow: if len >= cap
                         self.label_count += 1
                         skip_grow = f".Lskip_grow_{self.label_count}"
-                        self.text.append(f"    mov {base_off+8}(%rbp), %r10")   # len
-                        self.text.append(f"    cmp {base_off+16}(%rbp), %r10")  # cmp len, cap
+                        self.text.append(f"    mov {arr_ref(8)}, %r10")   # len
+                        self.text.append(f"    cmp {arr_ref(16)}, %r10")  # cmp len, cap
                         self.text.append(f"    jl {skip_grow}")
                         # Grow: new_cap = cap * 2 (or 4 if 0)
-                        self.text.append(f"    mov {base_off+16}(%rbp), %rdi")
+                        self.text.append(f"    mov {arr_ref(16)}, %rdi")
                         self.text.append("    shl $1, %rdi")
                         self.text.append("    cmp $4, %rdi")
                         self.label_count += 1
@@ -1382,27 +1526,27 @@ __c5_str_sub:
                         self.text.append(f"    jge {cap_ok}")
                         self.text.append("    mov $4, %rdi")
                         self.text.append(f"{cap_ok}:")
-                        self.text.append(f"    mov %rdi, {base_off+16}(%rbp)")  # update cap
+                        self.text.append(f"    mov %rdi, {arr_ref(16)}")  # update cap
                         self.text.append(f"    imul ${elem_sz}, %rdi")
-                        self.text.append(f"    mov {base_off}(%rbp), %rsi")     # old data ptr (2nd arg for realloc)
+                        self.text.append(f"    mov {arr_ref(0)}, %rsi")     # old data ptr (2nd arg for realloc)
                         self.text.append("    xchg %rdi, %rsi")  # rdi=old_ptr, rsi=new_size
                         self.text.append("    mov %rsi, %rsi")   # clear upper bits
                         self.text.append("    xchg %rdi, %rsi")  # rdi=size, rsi=old_ptr -> wrong, fix:
                         # Actually realloc(ptr, size): rdi=ptr, rsi=size
                         self.text.pop(); self.text.pop(); self.text.pop(); self.text.pop()
-                        self.text.append(f"    mov {base_off}(%rbp), %rdi")     # old ptr
-                        self.text.append(f"    mov {base_off+16}(%rbp), %rsi")  # new cap
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi")     # old ptr
+                        self.text.append(f"    mov {arr_ref(16)}, %rsi")  # new cap
                         self.text.append(f"    imul ${elem_sz}, %rsi")
                         self.text.append("    call realloc@PLT")
-                        self.text.append(f"    mov %rax, {base_off}(%rbp)")     # update data ptr
+                        self.text.append(f"    mov %rax, {arr_ref(0)}")     # update data ptr
                         self.text.append(f"{skip_grow}:")
                         
                         # Store value at data[len]
                         if is_struct:
                             # Use memcpy to copy struct data
                             self.text.append("    pop %r11")  # restore src addr
-                            self.text.append(f"    mov {base_off}(%rbp), %rdi")  # dest = data ptr
-                            self.text.append(f"    mov {base_off+8}(%rbp), %r10") # current len
+                            self.text.append(f"    mov {arr_ref(0)}, %rdi")  # dest = data ptr
+                            self.text.append(f"    mov {arr_ref(8)}, %r10") # current len
                             self.text.append(f"    imul ${elem_sz}, %r10")
                             self.text.append("    add %r10, %rdi")  # dest = data + len*elem_sz
                             self.text.append("    mov %r11, %rsi")  # src
@@ -1414,8 +1558,8 @@ __c5_str_sub:
                                 self.text.append(f"    add ${st_sz}, %rsp")
                         else:
                             self.text.append("    pop %rax")  # restore value
-                            self.text.append(f"    mov {base_off}(%rbp), %rcx")  # data ptr
-                            self.text.append(f"    mov {base_off+8}(%rbp), %r10") # current len
+                            self.text.append(f"    mov {arr_ref(0)}, %rcx")  # data ptr
+                            self.text.append(f"    mov {arr_ref(8)}, %r10") # current len
                             self.text.append(f"    imul ${elem_sz}, %r10")
                             self.text.append("    add %r10, %rcx")
                             if elem_sz == 1:
@@ -1427,15 +1571,15 @@ __c5_str_sub:
                             else:
                                 self.text.append("    mov %rax, (%rcx)")
                         # Increment length
-                        self.text.append(f"    incq {base_off+8}(%rbp)")
+                        self.text.append(f"    incq {arr_ref(8)}")
                         return 'void'
                     
                     elif method == 'pop':
                         # Decrement length, return data[new_len]
                         is_struct = elem_ty in self.structs
-                        self.text.append(f"    decq {base_off+8}(%rbp)")
-                        self.text.append(f"    mov {base_off+8}(%rbp), %r10") # new len
-                        self.text.append(f"    mov {base_off}(%rbp), %rcx")   # data ptr
+                        self.text.append(f"    decq {arr_ref(8)}")
+                        self.text.append(f"    mov {arr_ref(8)}, %r10") # new len
+                        self.text.append(f"    mov {arr_ref(0)}, %rcx")   # data ptr
                         self.text.append(f"    imul ${elem_sz}, %r10")
                         self.text.append("    add %r10, %rcx")
                         if is_struct:
@@ -1454,11 +1598,11 @@ __c5_str_sub:
                         return elem_ty
                     
                     elif method == 'length':
-                        self.text.append(f"    mov {base_off+8}(%rbp), %rax")
+                        self.text.append(f"    mov {arr_ref(8)}, %rax")
                         return 'int'
                     
                     elif method == 'clear':
-                        self.text.append(f"    movq $0, {base_off+8}(%rbp)")
+                        self.text.append(f"    movq $0, {arr_ref(8)}")
                         return 'void'
                 
                 raise Exception(f"Unknown method {method} on type {base_ty}")
@@ -1507,53 +1651,115 @@ __c5_str_sub:
                 self.text.append(f"    sub ${st_sz}, %rsp")
             
             # For array arguments, pass the 3 fields (ptr, len, cap)
+            # For struct arguments, pass in registers if <= 16 bytes, otherwise by pointer
             arg_types = []
             
             for arg in args:
                 if arg[0] == 'init_list':
-                    # Inline init_list passed as function arg: create temp array
-                    # We need to know the expected type. For now infer from context.
-                    # Allocate temp array on stack
-                    items = arg[1]
-                    count = len(items)
-                    # Infer elem type from function signature or first element
-                    # For simplicity, assume int<32> if we can't determine
-                    # Check function params
+                    # Inline init_list passed as function arg
+                    # We need to know the expected type from function signature
                     param_ty = None
                     for fnode in [n for n in self._current_ast if n[0] == 'func' and n[2] == func_name]:
                         params = fnode[3]
                         idx = len(arg_types)
                         if idx < len(params):
                             param_ty = params[idx][0]
-                    if param_ty and param_ty.startswith('array<'):
-                        a_elem_ty = self.array_elem_type(param_ty)
-                    else:
-                        a_elem_ty = 'int<32>'
-                    a_elem_sz = self.sizeof(a_elem_ty)
-                    alloc_sz = count * a_elem_sz
-                    # malloc
-                    self.text.append(f"    mov ${alloc_sz}, %rdi")
-                    self.text.append("    call malloc@PLT")
-                    self.text.append("    push %rax")  # save data ptr temporarily
-                    # Fill elements
-                    for i, val in enumerate(items):
-                        self.gen_expr(val)
-                        self.text.append("    mov 0(%rsp), %rcx")  # peek data ptr
-                        off = i * a_elem_sz
-                        if a_elem_sz == 4:
-                            self.text.append(f"    mov %eax, {off}(%rcx)")
+                    
+                    items = arg[1]
+                    count = len(items)
+                    
+                    # Check if this is a struct initializer
+                    if param_ty and param_ty in self.structs:
+                        # Struct initializer: create temp struct, then pass in registers
+                        st = self.structs[param_ty]
+                        st_sz = st['size']
+                        field_list = list(st['fields'].items())
+                        
+                        # Allocate temp space on stack (aligned to 8)
+                        st_sz_aligned = st_sz
+                        if st_sz % 8 != 0:
+                            st_sz_aligned = st_sz + (8 - st_sz % 8)
+                        self.text.append(f"    sub ${st_sz_aligned}, %rsp")
+                        
+                        # Initialize fields
+                        for fi, fval in enumerate(items):
+                            fname, finfo = field_list[fi]
+                            self.gen_expr(fval)
+                            foff = finfo['offset']
+                            if finfo['type'].startswith('float'):
+                                if finfo['type'] == 'float<32>':
+                                    self.text.append(f"    movss %xmm0, {foff}(%rsp)")
+                                else:
+                                    self.text.append(f"    movsd %xmm0, {foff}(%rsp)")
+                            else:
+                                fsz = self.sizeof(finfo['type'])
+                                if fsz == 1:
+                                    self.text.append(f"    mov %al, {foff}(%rsp)")
+                                elif fsz == 2:
+                                    self.text.append(f"    mov %ax, {foff}(%rsp)")
+                                elif fsz == 4:
+                                    self.text.append(f"    mov %eax, {foff}(%rsp)")
+                                else:
+                                    self.text.append(f"    mov %rax, {foff}(%rsp)")
+                        
+                        # Now load struct values and push for register passing
+                        if st_sz <= 16:
+                            # We need to push values so they pop into correct registers
+                            # pop order in generated code: pop %rsi, pop %rdi
+                            # So push order: first value (for rdi), then second value (for rsi)
+                            
+                            # Save the base of our temp struct
+                            self.text.append("    mov %rsp, %r11")  # r11 = base of temp struct
+                            
+                            # Push first 8 bytes (will be popped second -> rdi)
+                            self.text.append(f"    mov (%r11), %rax")
+                            self.text.append("    push %rax")
+                            if st_sz > 8:
+                                # Push second 8 bytes (will be popped first -> rsi)
+                                self.text.append(f"    mov 8(%r11), %rax")
+                                self.text.append("    push %rax")
+                            
+                            # Don't clean up temp space here - leave it on stack
+                            # It will be cleaned up after the function call
+                            arg_types.append(param_ty)
                         else:
-                            self.text.append(f"    mov %rax, {off}(%rcx)")
-                    # Pop data ptr, then push in LIFO order for correct register assignment
-                    # Pop order will be: ptr, len, cap (matching rdi, rsi, rdx)
-                    # So push order must be: cap, len, ptr
-                    self.text.append("    pop %r11")  # data ptr in r11
-                    self.text.append(f"    mov ${count}, %rax")
-                    self.text.append("    push %rax")    # push cap (will be popped last -> rdx)
-                    self.text.append(f"    mov ${count}, %rax")
-                    self.text.append("    push %rax")    # push len (will be popped 2nd -> rsi)
-                    self.text.append("    push %r11")    # push ptr (will be popped 1st -> rdi)
-                    arg_types.append(param_ty if param_ty else f'array<{a_elem_ty}>')
+                            # Pass pointer to struct
+                            self.text.append("    mov %rsp, %rax")
+                            self.text.append("    push %rax")
+                            arg_types.append(param_ty)
+                            
+                    elif param_ty and param_ty.startswith('array<'):
+                        # Array initializer
+                        a_elem_ty = self.array_elem_type(param_ty)
+                        a_elem_sz = self.sizeof(a_elem_ty)
+                        alloc_sz = count * a_elem_sz
+                        # malloc
+                        self.text.append(f"    mov ${alloc_sz}, %rdi")
+                        self.text.append("    call malloc@PLT")
+                        self.text.append("    push %rax")  # save data ptr temporarily
+                        # Fill elements
+                        for i, val in enumerate(items):
+                            self.gen_expr(val)
+                            self.text.append("    mov 0(%rsp), %rcx")  # peek data ptr
+                            off = i * a_elem_sz
+                            if a_elem_sz == 4:
+                                self.text.append(f"    mov %eax, {off}(%rcx)")
+                            else:
+                                self.text.append(f"    mov %rax, {off}(%rcx)")
+                        # Pop data ptr, then push in LIFO order for correct register assignment
+                        self.text.append("    pop %r11")  # data ptr in r11
+                        self.text.append(f"    mov ${count}, %rax")
+                        self.text.append("    push %rax")    # push cap (will be popped last -> rdx)
+                        self.text.append(f"    mov ${count}, %rax")
+                        self.text.append("    push %rax")    # push len (will be popped 2nd -> rsi)
+                        self.text.append("    push %r11")    # push ptr (will be popped 1st -> rdi)
+                        arg_types.append(param_ty)
+                    else:
+                        # Unknown type - treat as int
+                        for val in items:
+                            self.gen_expr(val)
+                            self.text.append("    push %rax")
+                        arg_types.append('int')
                 else:
                     ty = self.gen_expr(arg)
                     if ty.startswith('float'):
@@ -1562,6 +1768,7 @@ __c5_str_sub:
                             self.text.append("    movss %xmm0, (%rsp)")
                         else:
                             self.text.append("    movsd %xmm0, (%rsp)")
+                        arg_types.append(ty)
                     elif ty.startswith('array<'):
                         # Push array fields in LIFO order: cap, len, ptr
                         if arg[0] == 'id' and arg[1] in self.local_vars:
@@ -1573,14 +1780,39 @@ __c5_str_sub:
                             self.text.append(f"    pushq {aoff}(%rbp)")     # ptr (popped 1st)
                         else:
                             self.text.append("    push %rax")
+                        arg_types.append(ty)
+                    elif ty in self.structs:
+                        # Struct argument: ty is the struct type (not pointer)
+                        # The expression returned a pointer to the struct in %rax
+                        st = self.structs[ty]
+                        st_sz = st['size']
+                        
+                        if st_sz <= 16:
+                            # Load struct values from pointer and push for register passing
+                            self.text.append("    mov (%rax), %rcx")  # first 8 bytes
+                            self.text.append("    push %rcx")
+                            if st_sz > 8:
+                                self.text.append("    mov 8(%rax), %rcx")  # second 8 bytes
+                                self.text.append("    push %rcx")
+                            arg_types.append(ty)
+                        else:
+                            # Pass pointer to struct
+                            self.text.append("    push %rax")
+                            arg_types.append(ty)
+                    elif ty.endswith('*') and ty[:-1] in self.structs:
+                        # Struct pointer argument - just pass the pointer
+                        self.text.append("    push %rax")
+                        arg_types.append(ty)
                     else:
                         self.text.append("    push %rax")
-                    arg_types.append(ty)
+                        arg_types.append(ty)
                 
             int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
             float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
             
             # For arrays, we need 3 int regs per array arg
+            # For structs <= 16 bytes, we need up to 2 int regs
+            # For structs > 16 bytes, we need 1 int reg (pointer)
             # Count how many int regs we need for actual args
             int_slots = 0
             float_slots = 0
@@ -1589,6 +1821,12 @@ __c5_str_sub:
                     float_slots += 1
                 elif ty.startswith('array<'):
                     int_slots += 3  # ptr, len, cap
+                elif ty in self.structs:
+                    st_sz = self.structs[ty]['size']
+                    if st_sz <= 16:
+                        int_slots += 2 if st_sz > 8 else 1
+                    else:
+                        int_slots += 1  # pointer
                 else:
                     int_slots += 1
             
@@ -1621,6 +1859,28 @@ __c5_str_sub:
                     self.text.append(f"    pop {reg_ptr}")   # ptr
                     self.text.append(f"    pop {reg_len}")   # len
                     self.text.append(f"    pop {reg_cap}")   # cap
+                elif ty in self.structs:
+                    # Struct argument: pop into registers
+                    st_sz = self.structs[ty]['size']
+                    if st_sz <= 16:
+                        if st_sz > 8:
+                            # Pop 2 values
+                            reg2 = int_regs[int_idx]
+                            int_idx -= 1
+                            reg1 = int_regs[int_idx]
+                            int_idx -= 1
+                            self.text.append(f"    pop {reg2}")   # second 8 bytes
+                            self.text.append(f"    pop {reg1}")   # first 8 bytes
+                        else:
+                            # Pop 1 value
+                            reg = int_regs[int_idx]
+                            int_idx -= 1
+                            self.text.append(f"    pop {reg}")
+                    else:
+                        # Pop pointer
+                        reg = int_regs[int_idx]
+                        int_idx -= 1
+                        self.text.append(f"    pop {reg}")
                 else:
                     reg = int_regs[int_idx]
                     int_idx -= 1

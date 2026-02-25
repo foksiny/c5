@@ -40,8 +40,26 @@ class Parser:
         self.consume('LET')
         ty = self.parse_type()
         name = self.consume('ID').value
+        if self.peek().type == 'SEMI':
+            # No initializer - zero initialization
+            self.consume('SEMI')
+            return ('pub_var', ty, name, None, loc)
         self.consume('ASSIGN')
-        init = self.parse_expr()
+        if self.peek().type == 'LBRACE':
+            # Array or struct initializer list
+            self.consume('LBRACE')
+            init_list = []
+            if self.peek().type != 'RBRACE':
+                while True:
+                    init_list.append(self.parse_expr())
+                    if self.peek().type == 'COMMA':
+                        self.consume('COMMA')
+                    else:
+                        break
+            self.consume('RBRACE')
+            init = ('init_list', init_list)
+        else:
+            init = self.parse_expr()
         self.consume('SEMI')
         return ('pub_var', ty, name, init, loc)
 
