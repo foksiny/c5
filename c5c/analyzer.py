@@ -194,6 +194,12 @@ class SemanticAnalyzer:
             base_ty = self._get_type(node[1])
             if base_ty.startswith('array<') and base_ty.endswith('>'):
                 return base_ty[6:-1]
+            # Handle [] on char* or string types - returns char
+            if base_ty == 'char*' or base_ty == 'string':
+                return 'char'
+            # Handle [] on other pointer types - returns the pointed-to type
+            if base_ty.endswith('*'):
+                return base_ty[:-1]
             return "unknown"
         if tag == 'call':
             target = node[1]
@@ -206,6 +212,9 @@ class SemanticAnalyzer:
                         return base_ty[6:-1]
                     return 'void'
             name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
+            # Handle built-in c_str() function
+            if name == 'c_str':
+                return 'char*'
             return self.functions.get(name, ("int", 0, False, False))[0]
         return "unknown"
 
@@ -265,7 +274,10 @@ class SemanticAnalyzer:
                             break
                 
                 if not is_func_ptr:
-                    if name not in self.functions:
+                    # c_str() is a built-in function
+                    if name == 'c_str':
+                        pass  # Built-in function, no error
+                    elif name not in self.functions:
                         self.add_error("E005", name, loc)
                     else:
                         self.used_funcs.add(name)

@@ -1,0 +1,13 @@
+include <std.c5h>
+
+void main() {
+    char* a = c_str("Hello, world!");
+
+    char b = a[1];
+    std::printf("str: %s\nchar: %c\n", a, b);
+
+    string a2 = "Hello, world!";
+
+    char b2 = a2[1];
+    std::printf("str: %s\nchar: %c\n", a2, b2);
+}

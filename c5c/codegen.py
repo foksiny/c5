@@ -109,6 +109,12 @@ class CodeGen:
             base_ty = self._get_expr_type(node[1])
             if base_ty.startswith('array<') and base_ty.endswith('>'):
                 return base_ty[6:-1]
+            # Handle [] on char* or string types - returns char
+            if base_ty == 'char*' or base_ty == 'string':
+                return 'char'
+            # Handle [] on other pointer types - returns the pointed-to type
+            if base_ty.endswith('*'):
+                return base_ty[:-1]
             return 'int'
         if tag == 'call':
             target = node[1]
@@ -122,6 +128,9 @@ class CodeGen:
                         return base_ty[6:-1]
                 return 'void'
             name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
+            # Handle built-in c_str() function
+            if name == 'c_str':
+                return 'char*'
             if name in self.func_signatures:
                 return self.func_signatures[name]
             return 'int'
@@ -205,6 +214,47 @@ class CodeGen:
             # arr[idx]: compute address of element
             base_addr, base_ty = self.get_lvalue(node[1])
             elem_ty = self.array_elem_type(base_ty)
+            
+            # Handle [] on char* or string types
+            if base_ty == 'char*' or base_ty == 'string':
+                elem_ty = 'char'
+                elem_sz = 1
+                # For string/char*, the variable IS the pointer (not a struct with data ptr)
+                if '(%rbp)' in base_addr:
+                    base_off = int(base_addr.split('(')[0])
+                    self.text.append(f"    mov {base_off}(%rbp), %r11")  # pointer value
+                elif '(%rip)' in base_addr:
+                    self.text.append(f"    mov {base_addr}, %r11")
+                else:
+                    # It might be a string literal or expression result
+                    self.text.append(f"    mov {base_addr}, %r11")
+                # Evaluate index
+                self.text.append("    push %r11")
+                self.gen_expr(node[2])  # index in %rax
+                self.text.append("    pop %r11")
+                self.text.append(f"    add %rax, %r11")  # char is 1 byte, no scaling needed
+                return "(%r11)", 'char'
+            
+            # Handle [] on other pointer types
+            if base_ty.endswith('*') and not elem_ty:
+                elem_ty = base_ty[:-1]  # Remove the *
+                elem_sz = self.sizeof(elem_ty)
+                # For pointers, the variable IS the pointer
+                if '(%rbp)' in base_addr:
+                    base_off = int(base_addr.split('(')[0])
+                    self.text.append(f"    mov {base_off}(%rbp), %r11")  # pointer value
+                elif '(%rip)' in base_addr:
+                    self.text.append(f"    mov {base_addr}, %r11")
+                else:
+                    self.text.append(f"    mov {base_addr}, %r11")
+                # Evaluate index
+                self.text.append("    push %r11")
+                self.gen_expr(node[2])  # index in %rax
+                self.text.append("    pop %r11")
+                self.text.append(f"    imul ${elem_sz}, %rax")
+                self.text.append("    add %rax, %r11")
+                return "(%r11)", elem_ty
+            
             elem_sz = self.sizeof(elem_ty) if elem_ty else 8
             # Load data pointer
             if '(%rbp)' in base_addr:
@@ -1606,6 +1656,14 @@ __c5_str_sub:
                         return 'void'
                 
                 raise Exception(f"Unknown method {method} on type {base_ty}")
+            
+            # Handle built-in c_str() function
+            if target[0] == 'id' and target[1] == 'c_str':
+                # c_str() takes a string argument and returns char* (the same pointer)
+                if len(args) == 1:
+                    ty = self.gen_expr(args[0])
+                    # The result is already in %rax - for strings, it's already a char*
+                    return 'char*'
             
             func_name = ""
             full_func_name = ""

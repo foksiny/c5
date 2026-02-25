@@ -158,6 +158,32 @@ s = s + " World";   // Concatenation
 s = s - " Hello";   // Result: " World"
 ```
 
+#### C String Interoperability
+C5 provides seamless interoperability with C strings through the built-in `c_str()` function and string indexing:
+
+```c
+include <std.c5h>
+
+void main() {
+    // Convert a C5 string to a C string (char*)
+    char* a = c_str("Hello, world!");
+    
+    // Index into C strings
+    char b = a[1];  // 'e'
+    std::printf("str: %s\nchar: %c\n", a, b);
+    
+    // Index into C5 strings directly
+    string a2 = "Hello, world!";
+    char b2 = a2[1];  // 'e'
+    std::printf("str: %s\nchar: %c\n", a2, b2);
+}
+```
+
+**Key features:**
+- `c_str(string)`: Converts a C5 `string` to a C `char*` pointer for use with C library functions
+- `[]` operator: Works on both `string` and `char*` types to access individual characters
+- Returns `char` type when indexing into strings
+
 ### 7. Structs & Enums
 ```c
 struct Point {
