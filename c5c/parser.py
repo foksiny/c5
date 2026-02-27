@@ -353,9 +353,47 @@ class Parser:
         self.consume('RBRACE')
         return ('foreach_stmt', index_var, value_var, array_expr, body, loc)
 
+    def parse_switch_stmt(self):
+        loc = self._loc()
+        self.consume('SWITCH')
+        self.consume('LPAREN')
+        cond = self.parse_expr()
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        cases = []
+        default_body = None
+        while self.peek().type != 'RBRACE':
+            if self.peek().type == 'CASE':
+                self.consume('CASE')
+                case_val = self.parse_expr()
+                self.consume('COLON')
+                body = []
+                # Parse statements until we hit another CASE, DEFAULT, or RBRACE
+                while self.peek().type not in ('CASE', 'DEFAULT', 'RBRACE'):
+                    body.append(self.parse_stmt())
+                cases.append(('case', case_val, body, loc))
+            elif self.peek().type == 'DEFAULT':
+                self.consume('DEFAULT')
+                self.consume('COLON')
+                default_body = []
+                while self.peek().type != 'RBRACE':
+                    default_body.append(self.parse_stmt())
+            else:
+                raise SyntaxError(f"Unexpected token {self.peek().type} in switch body at line {self.peek().line}")
+        self.consume('RBRACE')
+        return ('switch_stmt', cond, cases, default_body, loc)
+
+    def parse_break_stmt(self):
+        loc = self._loc()
+        self.consume('BREAK')
+        self.consume('SEMI')
+        return ('break_stmt', loc)
+
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
+        if self.peek().type == 'SWITCH':
+            return self.parse_switch_stmt()
         if self.peek().type == 'WHILE':
             return self.parse_while_stmt()
         if self.peek().type == 'FOR':
@@ -364,6 +402,8 @@ class Parser:
             return self.parse_foreach_stmt()
         if self.peek().type == 'DO':
             return self.parse_do_while_stmt()
+        if self.peek().type == 'BREAK':
+            return self.parse_break_stmt()
         
         loc = self._loc()
         is_decl = False

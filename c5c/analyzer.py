@@ -4,7 +4,7 @@ class SemanticAnalyzer:
     def __init__(self, source_code=None, filename=None):
         self.errors = []
         self.warnings = []
-        self.scopes = [{}] 
+        self.scopes = [{}]
         self.var_locs = {}  # Track variable declaration locations
         self.func_locs = {}  # Track function declaration locations
         self.functions = {}
@@ -19,6 +19,7 @@ class SemanticAnalyzer:
         self.show_warnings = True
         self.library_funcs = set()  # Functions from library files (no dead code warnings)
         self.library_vars = set()   # Variables from library files (no dead code warnings)
+        self.break_context = []  # Stack to track if we're inside a loop or switch (for break statements)
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -417,20 +418,110 @@ class SemanticAnalyzer:
             self.var_locs[index_var] = loc
             self.var_locs[value_var] = loc
             
-            # Analyze body
+            # Analyze body within break context
+            self.break_context.append('loop')
             for s in body:
                 self._analyze_node(s)
+            self.break_context.pop()
             
             # Pop scope
             self.scopes.pop()
 
-        elif tag in ('expr_stmt', 'return_stmt', 'while_stmt', 'for_stmt', 'do_while_stmt'):
-             for child in node[1:]:
-                 if isinstance(child, (tuple, list)):
-                     if isinstance(child, list):
-                         for i in child: self._analyze_node(i)
-                     else: self._analyze_node(child)
+        elif tag in ('expr_stmt', 'return_stmt'):
+            for child in node[1:]:
+                if isinstance(child, (tuple, list)):
+                    if isinstance(child, list):
+                        for i in child: self._analyze_node(i)
+                    else: self._analyze_node(child)
         
+        elif tag == 'while_stmt':
+            # while (cond) body
+            self._analyze_node(node[1])  # condition
+            self.break_context.append('loop')
+            for s in node[2]:  # body
+                self._analyze_node(s)
+            self.break_context.pop()
+            
+        elif tag == 'for_stmt':
+            # for (init; cond; inc) body
+            self._analyze_node(node[1])  # init
+            self.break_context.append('loop')
+            self._analyze_node(node[2])  # condition
+            self._analyze_node(node[3])  # increment
+            for s in node[4]:  # body
+                self._analyze_node(s)
+            self.break_context.pop()
+            
+        elif tag == 'do_while_stmt':
+            # do body while (cond)
+            self.break_context.append('loop')
+            for s in node[1]:  # body
+                self._analyze_node(s)
+            self.break_context.pop()
+            self._analyze_node(node[2])  # condition
+            
+        elif tag == 'switch_stmt':
+            # switch (cond) { cases }
+            cond = node[1]
+            cases = node[2]
+            default_body = node[3]
+            # Analyze switch condition
+            self._analyze_node(cond)
+            # Check that condition type is integer-like (int, char, enum, or signed/unsigned variants)
+            cond_ty = self._get_type(cond)
+            if cond_ty not in ('int', 'char') and not cond_ty.startswith('int<') and not cond_ty.startswith('unsigned ') and not cond_ty.startswith('signed ') and cond_ty not in self.enums:
+                self.add_error("E002", f"switch condition must be integer or enum type, not {cond_ty}", loc)
+            # Track case values to detect duplicates
+            case_values = set()
+            # Analyze each case
+            for case in cases:
+                # case is ('case', case_val, body, loc)
+                case_val = case[1]
+                case_body = case[2]
+                case_loc = case[3]
+                # Try to evaluate case value at compile time if it's a constant
+                if case_val[0] in ('number', 'char'):
+                    val = case_val[1]
+                    # Check if this value already appeared
+                    if val in case_values:
+                        self.add_error("E015", f"duplicate case value {val}", case_loc)
+                    else:
+                        case_values.add(val)
+                elif case_val[0] == 'id':
+                    # Could be an enum value - check if it's in an enum
+                    name = case_val[1]
+                    found = False
+                    for scope in self.scopes:
+                        if name in scope:
+                            # It's a variable, not a constant - can't validate at compile time
+                            # We could try to see if it's an enum constant
+                            found = True
+                            break
+                    if not found:
+                        # Check if it's a namespaced enum access like Color::RED
+                        if case_val[0] == 'namespace_access':
+                            # Already handled as namespace_access node
+                            pass
+                        # We can't fully validate enum values at compile time without constant evaluation
+                        # For now, we'll allow it and trust the programmer
+                # Analyze case body within switch break context
+                self.break_context.append('switch')
+                for stmt in case_body:
+                    self._analyze_node(stmt)
+                self.break_context.pop()
+            # Analyze default body if present
+            if default_body:
+                self.break_context.append('switch')
+                for stmt in default_body:
+                    self._analyze_node(stmt)
+                self.break_context.pop()
+                
+        elif tag == 'break_stmt':
+            # break; must be inside a loop or switch
+            if not self.break_context:
+                self.add_error("E999", "break statement not inside a loop or switch", loc)
+            # break is valid - no further checks needed
+            
         elif tag == 'lambda':
             # Lambda expression: create a new scope for parameters and analyze body
             params, body = node[1], node[2]

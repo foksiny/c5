@@ -174,6 +174,66 @@ The `foreach` loop automatically:
 - Iterates from index 0 to length-1
 - Provides both the index and value in each iteration
 
+#### Switch-Case Statements
+
+The `switch` statement allows multi-way branching based on an integer or enum expression:
+
+```c
+include <std.c5h>
+
+enum Color { RED, GREEN, BLUE };
+
+void main() {
+    Color color = Color::RED;
+
+    switch (color) {
+        case Color::RED:
+            std::printf("Red\\n");
+            break;
+        case Color::GREEN:
+            std::printf("Green\\n");
+            break;
+        case Color::BLUE:
+            std::printf("Blue\\n");
+            break;
+        default:
+            std::printf("Unknown color\\n");
+            break;
+    }
+}
+```
+
+**Syntax:**
+```
+switch (expression) {
+case constant_expression:
+    statements
+case constant_expression:
+    statements
+default:
+    statements
+}
+```
+
+- The `switch` expression must be of integer or enum type.
+- Each `case` label must be followed by a constant expression (integer literal, char, or enum constant).
+- The `default` case is optional and executes if no other case matches.
+- `break` statements are used to exit the switch early. Without `break`, execution falls through to the next case.
+
+#### Break Statement
+
+The `break` statement terminates the execution of the innermost enclosing loop (`for`, `while`, `do-while`, `foreach`) or `switch` statement. It transfers control to the statement immediately following the loop or switch.
+
+```c
+for (int i = 0; i < 10; i = i + 1) {
+if (i == 5) {
+    break;  // Exit the loop when i reaches 5
+}
+}
+```
+
+**Note:** `break` is only allowed inside loops or a switch. Using `break` elsewhere will cause a compile-time error.
+
 ### 5. Directives & Namespacing
 When you `include <std.c5h>`, all functions inside are placed in the `std::` namespace.
 ```c

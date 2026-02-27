@@ -1,0 +1,26 @@
+include <std.c5h>
+
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+
+void main() {
+    Color color = Color::RED;
+
+    switch (color) {
+        case Color::RED:
+            std::printf("The color is red\n");
+            break;
+        case Color::GREEN:
+            std::printf("The color is green\n");
+            break;
+        case Color::BLUE:
+            std::printf("The color is blue\n");
+            break;
+        default:
+            std::printf("No supported color detected\n");
+            break;
+    }
+}

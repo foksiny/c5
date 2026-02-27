@@ -21,6 +21,7 @@ class CodeGen:
         self.uses_str_sub = False
         self.lambda_count = 0
         self.lambda_funcs = []  # Store lambda function definitions
+        self.break_targets = []  # Stack of break jump targets (for loops and switches)
 
     def mangle(self, name):
         return name.replace('::', '_')
@@ -173,6 +174,25 @@ class CodeGen:
             # Return 'unknown' for now - caller should handle this
             return 'unknown'
         return 'int'
+
+    def _get_case_value(self, expr):
+        """Evaluate a case expression to an integer constant."""
+        tag = expr[0]
+        if tag == 'number':
+            return expr[1]
+        elif tag == 'char':
+            return expr[1]  # char value is already an integer (ord)
+        elif tag == 'namespace_access':
+            base = expr[1]
+            name = expr[2]
+            # Look up in enums
+            if base in self.enums and name in self.enums[base]:
+                return self.enums[base][name]
+            else:
+                raise Exception(f"Unknown enum value {base}::{name}")
+        else:
+            # For other constant expressions, they should have been constant-folded
+            raise Exception(f"Non-constant case expression: {tag}")
 
     def get_string_label(self, val):
         if val in self.string_literals:
@@ -822,20 +842,26 @@ __c5_str_sub:
             self.gen_expr(cond)
             self.text.append("    cmp $0, %rax")
             self.text.append(f"    je {end_label}")
+            self.break_targets.append(end_label)
             for stmt in body:
                 self.gen_stmt(stmt)
+            self.break_targets.pop()
             self.text.append(f"    jmp {cond_label}")
             self.text.append(f"{end_label}:")
         elif node[0] == 'do_while_stmt':
             body, cond = node[1], node[2]
             self.label_count += 1
             start_label = f".Ldo_start_{self.label_count}"
+            end_label = f".Ldo_end_{self.label_count}"
             self.text.append(f"{start_label}:")
+            self.break_targets.append(end_label)
             for stmt in body:
                 self.gen_stmt(stmt)
+            self.break_targets.pop()
             self.gen_expr(cond)
             self.text.append("    cmp $0, %rax")
             self.text.append(f"    jne {start_label}")
+            self.text.append(f"{end_label}:")
         elif node[0] == 'for_stmt':
             init, cond, inc, body = node[1], node[2], node[3], node[4]
             self.label_count += 1
@@ -847,8 +873,10 @@ __c5_str_sub:
             self.gen_expr(cond)
             self.text.append("    cmp $0, %rax")
             self.text.append(f"    je {end_label}")
+            self.break_targets.append(end_label)
             for stmt in body:
                 self.gen_stmt(stmt)
+            self.break_targets.pop()
             self.gen_expr(inc)
             self.text.append(f"    jmp {cond_label}")
             self.text.append(f"{end_label}:")
@@ -956,12 +984,66 @@ __c5_str_sub:
                 self.text.append(f"    mov %rax, {value_off}(%rbp)")
             
             # Execute body
+            self.break_targets.append(end_label)
             for stmt in body:
                 self.gen_stmt(stmt)
+            self.break_targets.pop()
             
             # Increment index
             self.text.append(f"    incq {index_off}(%rbp)")
             self.text.append(f"    jmp {cond_label}")
+            self.text.append(f"{end_label}:")
+        elif node[0] == 'break_stmt':
+            if not self.break_targets:
+                raise Exception("break statement not inside a loop or switch")
+            target = self.break_targets[-1]
+            self.text.append(f"    jmp {target}")
+        elif node[0] == 'switch_stmt':
+            # Node structure: ('switch_stmt', cond, cases, default_body) after stripping loc
+            cond, cases, default_body = node[1], node[2], node[3]
+            self.label_count += 1
+            end_label = f".Lswitch_end_{self.label_count}"
+            
+            # Evaluate switch condition into %rax
+            self.gen_expr(cond)
+            
+            # Generate case labels
+            case_labels = []
+            for i, case in enumerate(cases):
+                case_label = f".Lcase_{self.label_count}_{i}"
+                case_labels.append(case_label)
+            
+            # For each case, generate comparison
+            for i, case in enumerate(cases):
+                case_val = self._get_case_value(case[1])
+                self.text.append(f"    cmp ${case_val}, %rax")
+                self.text.append(f"    je {case_labels[i]}")
+            
+            # If no case matched, jump to default or end
+            if default_body:
+                default_label = f".Ldefault_{self.label_count}"
+                self.text.append(f"    jmp {default_label}")
+            else:
+                self.text.append(f"    jmp {end_label}")
+            
+            # Push break target for switch body
+            self.break_targets.append(end_label)
+            
+            # Emit case bodies
+            for i, case in enumerate(cases):
+                self.text.append(f"{case_labels[i]}:")
+                case_body = case[2]
+                for stmt in case_body:
+                    self.gen_stmt(stmt)
+                # No explicit jump after case; fall-through allowed
+            
+            # Emit default body if present
+            if default_body:
+                self.text.append(f"{default_label}:")
+                for stmt in default_body:
+                    self.gen_stmt(stmt)
+            
+            self.break_targets.pop()
             self.text.append(f"{end_label}:")
         elif node[0] == 'if_stmt':
             cond, body, else_body = node[1], node[2], node[3]
