@@ -1,0 +1,12 @@
+include <std.c5h>
+
+let const int<32> a = 10;
+
+void main() {
+    const int<32> b = 20;
+
+    std::printf("a = %d\nb = %d\n", a, b);
+
+    // a = 15; // Error: Tried to modify a constant variable
+    // b = 25;
+}

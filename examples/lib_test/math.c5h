@@ -1,6 +1,18 @@
 // Math Library - Basic arithmetic operations
 // Usage: c5c main.c5 math.c5 -o <output>
 
+struct Vec2 {
+    int<32> x;
+    int<32> y;
+};
+
+enum Operation {
+    ADD,
+    SUB
+};
+
+let int<32> PI_INT = 314;
+
 int<32> add(int<32> a, int<32> b);
 int<32> sub(int<32> a, int<32> b);
 int<32> mul(int<32> a, int<32> b);

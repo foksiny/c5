@@ -1,12 +1,16 @@
-// use 'c5c main.c5 math.c5 -o <outname>' or 'c5c main.c math.c5' to compile this.
 include <std.c5h>
 include <math.c5h>
 
 void main() {
-    int<32> a = 10;
-    int<32> b = 20;
+    math::Vec2 v1;
+    v1.x = 10;
+    v1.y = 20;
 
-    int<32> r = math::add(a, b);
+    int<32> r = math::add(v1.x, v1.y);
+    std::printf("Result: %d\n", r);
 
-    std::printf("%d\n", r);
+    std::printf("PI_INT: %d\n", math::PI_INT);
+
+    int<32> op = math::Operation::ADD;
+    std::printf("OP ADD: %d\n", op);
 }

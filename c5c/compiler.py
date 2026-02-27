@@ -139,6 +139,8 @@ def compile_file(filepath, include_paths=None, is_library=False):
     global_path = os.path.expanduser("~/.c5/include")
     
     new_ast = []
+    library_funcs = set()  # Track functions from included headers
+    library_vars = set()   # Track variables from included headers
     for node in ast:
         if node[0] == 'include':
             fname = node[1]
@@ -165,12 +167,29 @@ def compile_file(filepath, include_paths=None, is_library=False):
             namespace = os.path.splitext(fname)[0]
             namespaced_ast = []
             for n in inc_ast:
-                if isinstance(n, tuple) and n[0] in ('func', 'extern'):
+                if isinstance(n, tuple):
+                    tag = n[0]
                     l = list(n)
-                    l[2] = f"{namespace}::{l[2]}"
-                    namespaced_ast.append(tuple(l))
+                    if tag in ('func', 'extern'):
+                        l[2] = f"{namespace}::{l[2]}"
+                        namespaced_ast.append(tuple(l))
+                    elif tag in ('struct_decl', 'enum_decl', 'macro', 'type_decl'):
+                        l[1] = f"{namespace}::{l[1]}"
+                        namespaced_ast.append(tuple(l))
+                    elif tag == 'pub_var':
+                        l[2] = f"{namespace}::{l[2]}"
+                        namespaced_ast.append(tuple(l))
+                    else:
+                        namespaced_ast.append(n)
                 else:
                     namespaced_ast.append(n)
+            # Collect library functions and variables from this include
+            for n in namespaced_ast:
+                if isinstance(n, tuple):
+                    if n[0] in ('func', 'extern'):
+                        library_funcs.add(n[2])
+                    elif n[0] == 'pub_var':
+                        library_vars.add(n[2])
             new_ast.extend(namespaced_ast)
         else:
             new_ast.append(node)
@@ -184,6 +203,8 @@ def compile_file(filepath, include_paths=None, is_library=False):
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
+    analyzer.library_funcs = library_funcs
+    analyzer.library_vars = library_vars
     analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
 
     # Strip location info before passing to optimizer/codegen
@@ -209,6 +230,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     all_code = ""
     primary_file = filepaths[0]
     library_funcs = set()  # Track functions from non-primary files
+    library_vars = set()   # Track variables from library files (no dead code warnings)
     
     for filepath in filepaths:
         code = open(filepath).read()
@@ -250,17 +272,37 @@ def compile_files(filepaths, include_paths=None, is_library=False):
                 namespace = os.path.splitext(fname)[0]
                 namespaced_ast = []
                 for n in inc_ast:
-                    if isinstance(n, tuple) and n[0] in ('func', 'extern'):
+                    if isinstance(n, tuple):
+                        tag = n[0]
                         l = list(n)
-                        l[2] = f"{namespace}::{l[2]}"
-                        namespaced_ast.append(tuple(l))
+                        if tag in ('func', 'extern'):
+                            l[2] = f"{namespace}::{l[2]}"
+                            namespaced_ast.append(tuple(l))
+                        elif tag in ('struct_decl', 'enum_decl', 'macro', 'type_decl'):
+                            l[1] = f"{namespace}::{l[1]}"
+                            namespaced_ast.append(tuple(l))
+                        elif tag == 'pub_var':
+                            l[2] = f"{namespace}::{l[2]}"
+                            namespaced_ast.append(tuple(l))
+                        else:
+                            namespaced_ast.append(n)
                     else:
                         namespaced_ast.append(n)
+                # Collect library functions and variables from this include
+                for n in namespaced_ast:
+                    if isinstance(n, tuple):
+                        if n[0] in ('func', 'extern'):
+                            library_funcs.add(n[2])
+                        elif n[0] == 'pub_var':
+                            library_vars.add(n[2])
                 combined_ast.extend(namespaced_ast)
             else:
-                # Track functions from non-primary files
-                if not is_primary and isinstance(node, tuple) and node[0] == 'func':
-                    library_funcs.add(node[2])  # node[2] is the function name
+                # Track functions and variables from non-primary files
+                if not is_primary and isinstance(node, tuple):
+                    if node[0] == 'func':
+                        library_funcs.add(node[2])  # node[2] is the function name
+                    elif node[0] == 'pub_var':
+                        library_vars.add(node[2])  # node[2] is the variable name
                 combined_ast.append(node)
     
     # Collect and expand macros
@@ -272,7 +314,8 @@ def compile_files(filepaths, include_paths=None, is_library=False):
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
-    analyzer.library_funcs = library_funcs  # Pass library functions to analyzer
+    analyzer.library_funcs = library_funcs
+    analyzer.library_vars = library_vars
     analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
 
     # Strip location info before passing to optimizer/codegen

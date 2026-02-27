@@ -27,6 +27,8 @@ class Parser:
                 decls.append(self.parse_struct_decl())
             elif self.peek().type == 'ENUM':
                 decls.append(self.parse_enum_decl())
+            elif self.peek().type == 'TYPE':
+                decls.append(self.parse_type_decl())
             elif self.peek().type == 'LET':
                 decls.append(self.parse_let_decl())
             elif self.peek().type == 'MACRO':
@@ -95,6 +97,23 @@ class Parser:
         self.consume('SEMI')
         return ('enum_decl', name, variants, loc)
 
+    def parse_type_decl(self):
+        loc = self._loc()
+        self.consume('TYPE')
+        name = self.consume('ID').value
+        self.consume('LBRACE')
+        types = []
+        if self.peek().type != 'RBRACE':
+            while True:
+                types.append(self.parse_type())
+                if self.peek().type == 'COMMA':
+                    self.consume('COMMA')
+                else:
+                    break
+        self.consume('RBRACE')
+        self.consume('SEMI')
+        return ('type_decl', name, types, loc)
+
     def parse_macro(self):
         loc = self._loc()
         self.consume('MACRO')
@@ -136,6 +155,13 @@ class Parser:
             return False
         # Skip base type ID
         look = pos + 1
+        # Handle namespaced types: skip :: and following ID repeatedly
+        while look < len(self.tokens) and self.tokens[look].type == 'COLONCOLON':
+            look += 1  # skip COLONCOLON
+            if look < len(self.tokens) and self.tokens[look].type == 'ID':
+                look += 1  # skip the ID after ::
+            else:
+                break
         # Skip <...>
         if look < len(self.tokens) and self.tokens[look].type == 'LT':
             nest = 1
@@ -161,20 +187,28 @@ class Parser:
         return ('include', fname)
 
     def parse_type(self):
-        # Handle signed/unsigned modifiers
+        # Handle signed/unsigned/const modifiers
         sign_modifier = None
+        const_modifier = False
         if self.peek().type == 'SIGNED':
             self.consume('SIGNED')
             sign_modifier = 'signed'
         elif self.peek().type == 'UNSIGNED':
             self.consume('UNSIGNED')
             sign_modifier = 'unsigned'
+        elif self.peek().type == 'CONST':
+            self.consume('CONST')
+            const_modifier = True
         
         if self.peek().type == 'VOID':
             self.consume('VOID')
             base = 'void'
         else:
             base = self.consume('ID').value
+            if self.peek().type == 'COLONCOLON':
+                self.consume('COLONCOLON')
+                base += '::' + self.consume('ID').value
+            
             if self.peek().type == 'LT':
                 self.consume('LT')
                 if self.peek().type == 'NUMBER':
@@ -189,6 +223,10 @@ class Parser:
         # Apply sign modifier to the type
         if sign_modifier:
             base = f"{sign_modifier} {base}"
+        
+        # Apply const modifier to the type
+        if const_modifier:
+            base = f"const {base}"
         
         while self.peek().type == 'MUL':
             self.consume('MUL')
@@ -330,12 +368,19 @@ class Parser:
         loc = self._loc()
         is_decl = False
         pos = self.pos
-        # Check for signed/unsigned modifiers
-        if self.peek().type in ('SIGNED', 'UNSIGNED'):
+        # Check for signed/unsigned/const modifiers
+        if self.peek().type in ('SIGNED', 'UNSIGNED', 'CONST'):
             is_decl = True
         elif self.peek().type == 'ID':
             # Skip base type ID
             look = pos + 1
+            # Handle namespaced types: skip :: and following ID repeatedly
+            while look < len(self.tokens) and self.tokens[look].type == 'COLONCOLON':
+                look += 1  # skip COLONCOLON
+                if look < len(self.tokens) and self.tokens[look].type == 'ID':
+                    look += 1  # skip the ID after ::
+                else:
+                    break
             # Skip <...>
             if look < len(self.tokens) and self.tokens[look].type == 'LT':
                 nest = 1
@@ -471,13 +516,16 @@ class Parser:
             self.consume('RBRACE')
             target = ('lambda', params, body, loc)
         elif self.peek().type == 'ID':
-            base = self.consume('ID').value
-            if self.peek().type == 'COLONCOLON':
+            parts = [self.consume('ID').value]
+            while self.peek().type == 'COLONCOLON':
                 self.consume('COLONCOLON')
-                name = self.consume('ID').value
-                target = ('namespace_access', base, name, loc)
+                parts.append(self.consume('ID').value)
+            if len(parts) == 1:
+                target = ('id', parts[0], loc)
             else:
-                target = ('id', base, loc)
+                base = '::'.join(parts[:-1])
+                name = parts[-1]
+                target = ('namespace_access', base, name, loc)
         elif self.peek().type == 'LBRACE':
             self.consume('LBRACE')
             items = []
@@ -494,7 +542,11 @@ class Parser:
             raise SyntaxError(f"Unexpected token {self.peek().type} in expression at line {self.peek().line}")
 
         while True:
-            if self.peek().type == 'DOT':
+            if self.peek().type == 'COLONCOLON':
+                self.consume('COLONCOLON')
+                name = self.consume('ID').value
+                target = ('namespace_access', target, name, loc)
+            elif self.peek().type == 'DOT':
                 self.consume('DOT')
                 field = self.consume('ID').value
                 target = ('member_access', target, field, loc)

@@ -11,6 +11,7 @@ class CodeGen:
         self.func_signatures = {}
         self.structs = {}
         self.enums = {}
+        self.types = {}  # Type definitions (union/variant types)
         self.local_vars = {}
         self.local_var_offset = 0
         self.label_count = 0
@@ -21,6 +22,10 @@ class CodeGen:
         self.lambda_count = 0
         self.lambda_funcs = []  # Store lambda function definitions
 
+    def mangle(self, name):
+        return name.replace('::', '_')
+
+
     def sizeof(self, ty):
         if ty.endswith('*'): return 8
         if ty == 'fnptr': return 8  # Function pointer type
@@ -28,12 +33,32 @@ class CodeGen:
         # Handle signed/unsigned types
         if ty.startswith('unsigned ') or ty.startswith('signed '):
             ty = ty.split(' ', 1)[1]  # Strip the modifier for size calculation
-        if ty == 'int<8>' or ty == 'char': return 1
+        # Handle generic int<num>
+        if ty.startswith('int<') and ty.endswith('>'):
+            try:
+                bits = int(ty[4:-1])
+                return (bits + 7) // 8
+            except:
+                return 8
+        if ty == 'char': return 1  # char is int<8>
         if ty == 'int<16>': return 2
         if ty == 'int<32>' or ty == 'float<32>': return 4
         if ty == 'int' or ty == 'float' or ty == 'float<64>' or ty == 'string': return 8
         if ty in self.structs: return self.structs[ty]['size']
         if ty in self.enums: return 4
+        if ty in self.types:
+            # Typedef (union type): size is max of all member types, aligned to max alignment
+            max_size = 0
+            for member_ty in self.types[ty]:
+                # Strip const for size calculation
+                mem_ty = member_ty[6:] if member_ty.startswith('const ') else member_ty
+                mem_size = self.sizeof(mem_ty)
+                if mem_size > max_size:
+                    max_size = mem_size
+            # Ensure at least 1 byte
+            if max_size == 0:
+                max_size = 1
+            return max_size
         return 8
 
     def array_elem_type(self, ty):
@@ -138,6 +163,10 @@ class CodeGen:
             name = f"{node[1]}::{node[2]}"
             if name in self.func_signatures:
                 return self.func_signatures[name]
+            if name in self.global_vars:
+                return self.global_vars[name]
+            if node[1] in self.enums:
+                return 'int'
             return 'int'
         if tag == 'init_list':
             # For init_list, we need context to determine the type
@@ -180,6 +209,12 @@ class CodeGen:
                 ty = self.global_vars[node[1]]
                 return f"{node[1]}(%rip)", ty
             raise Exception(f"Unknown var {node[1]}")
+        elif node[0] == 'namespace_access':
+            name = f"{node[1]}::{node[2]}"
+            if name in self.global_vars:
+                ty = self.global_vars[name]
+                return f"{self.mangle(name)}(%rip)", ty
+            raise Exception(f"Unknown namespaced var {name}")
         elif node[0] == 'member_access':
             base_addr, base_ty = self.get_lvalue(node[1])
             if base_ty in self.structs:
@@ -297,6 +332,9 @@ class CodeGen:
                 for i, v in enumerate(variants):
                     val_map[v] = i
                 self.enums[name] = val_map
+            elif node[0] == 'type_decl':
+                name, types = node[1], node[2]
+                self.types[name] = types
             elif node[0] == 'extern':
                 _, ty, name, params, varargs = node
                 self.extern_funcs[name] = {'varargs': varargs}
@@ -308,8 +346,9 @@ class CodeGen:
                 _, ty, name, init = node
                 self.global_vars[name] = ty
                 sz = self.sizeof(ty)
-                self.data.append(f".global {name}")
-                self.data.append(f"{name}:")
+                mangled = self.mangle(name)
+                self.data.append(f".global {mangled}")
+                self.data.append(f"{mangled}:")
                 if init is None:
                     # Zero initialization for global variables without initializer
                     self.data.append(f"    .zero {sz}")
@@ -965,12 +1004,37 @@ __c5_str_sub:
             return "string"
         elif node[0] == 'namespace_access':
             base, name = node[1], node[2]
+            namespaced_name = f"{base}::{name}"
+            mangled = self.mangle(namespaced_name)
             if base in self.enums and name in self.enums[base]:
                 val = self.enums[base][name]
                 self.text.append(f"    mov ${val}, %rax")
                 return "int"
+            elif namespaced_name in self.global_vars:
+                ty = self.global_vars[namespaced_name]
+                sz = self.sizeof(ty)
+                if ty.startswith('float'):
+                   if ty == 'float<32>': self.text.append(f"    movss {mangled}(%rip), %xmm0")
+                   else: self.text.append(f"    movsd {mangled}(%rip), %xmm0")
+                else:
+                    is_unsigned = ty.startswith('unsigned ')
+                    if sz == 1:
+                        if is_unsigned: self.text.append(f"    movzbq {mangled}(%rip), %rax")
+                        else: self.text.append(f"    movsbq {mangled}(%rip), %rax")
+                    elif sz == 2:
+                        if is_unsigned: self.text.append(f"    movzwq {mangled}(%rip), %rax")
+                        else: self.text.append(f"    movswq {mangled}(%rip), %rax")
+                    elif sz == 4:
+                        if is_unsigned: self.text.append(f"    movl {mangled}(%rip), %eax")
+                        else: self.text.append(f"    movslq {mangled}(%rip), %rax")
+                    else:
+                        self.text.append(f"    mov {mangled}(%rip), %rax")
+                return ty
+            elif namespaced_name in self.func_signatures:
+                self.text.append(f"    lea {mangled}(%rip), %rax")
+                return "fnptr"
             else:
-                raise Exception(f"Unknown namespace access: {base}::{name}")
+                raise Exception(f"Unknown namespace access: {namespaced_name}")
         elif node[0] == 'lambda':
             # Lambda expression: generate a unique function and return its address
             params, body = node[1], node[2]

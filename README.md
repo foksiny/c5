@@ -98,6 +98,40 @@ float pi = 3.14159;
 char initial = 'J';
 ```
 
+#### Constants
+Use the `const` keyword to declare variables that cannot be modified after initialization. Constants can be declared at both global and local scope:
+
+```c
+include <std.c5h>
+
+// Global constant
+let const int<32> MAX_VALUE = 100;
+
+void main() {
+    // Local constant
+    const int<32> local_const = 42;
+    
+    std::printf("MAX_VALUE = %d\n", MAX_VALUE);
+    std::printf("local_const = %d\n", local_const);
+    
+    // Error: cannot modify a const variable
+    // local_const = 50;  // E042: Const Violation
+}
+```
+
+**Key features:**
+- **Immutable**: Once initialized, const variables cannot be assigned new values
+- **Type-safe**: Const correctness is enforced at compile time
+- **Global and local**: Use `let const` for globals, `const` for locals
+- **Error E042**: Attempting to modify a const variable produces error E042
+
+**Const with different types:**
+```c
+const string GREETING = "Hello";
+const float<32> PI = 3.14159;
+const char NEWLINE = '\n';
+```
+
 ### 4. Control Flow
 C5 supports standard C control structures:
 - `if` / `else`
@@ -351,6 +385,93 @@ void main() {
     std::printf("Mul: %d\n", mul(5, 3));   // Output: Mul: 15
 }
 ```
+
+### 14. Type Definitions
+
+C5 supports user-defined type aliases and union-like types using the `type` keyword. This allows you to create a new type that can hold values of any of the specified underlying types.
+
+#### Basic Type Alias
+
+You can define a new name for an existing type:
+
+```c
+type MyInt {
+    int<32>
+};
+```
+
+This creates a type `MyInt` that is functionally equivalent to `int<32>`.
+
+#### Union Types
+
+More powerfully, you can define a type that can hold multiple different types, similar to a union:
+
+```c
+type Value {
+    int<64>,
+    float<64>,
+    string
+};
+```
+
+The `Value` type can store an integer, a floating-point number, or a string. The size of the union is the size of its largest member (plus any alignment padding).
+
+#### Using Type Definitions
+
+Once defined, a type can be used like any other type:
+
+```c
+include <std.c5h>
+
+type bool {
+    int<1>
+};
+
+void main() {
+    bool flag = 1;
+    std::printf("Flag: %d\n", flag);
+}
+```
+
+Type definitions are global and must be declared before use. They are stored in the global type namespace, separate from variables and functions.
+
+#### Notes
+
+- The language currently does not enforce strict type checking for assignments to union types; any value can be assigned, but it is the programmer's responsibility to ensure the correct variant is used.
+- The size of a union type is automatically computed as the maximum size of its members.
+- You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
+
+### 15. Type Width Checking
+
+C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
+
+#### Integer Width Checking
+
+When assigning an integer literal to a variable with a specific integer width (e.g., `int<8>`, `unsigned int<16>`), the compiler verifies that the value lies within the representable range. If the value is too large or too small, an error is raised (E023).
+
+```c
+include <std.c5h>
+
+void main() {
+    int<8> x = 300;  // Error: value 300 exceeds int<8> range (-128..127)
+    unsigned int<8> y = 256;  // Error: value 256 exceeds unsigned int<8> range (0..255)
+}
+```
+
+The ranges are calculated based on the signedness and bit width:
+- Signed `int<N>`: -(2^(N-1)) to 2^(N-1)-1
+- Unsigned `int<N>`: 0 to 2^N - 1
+
+#### Floating-Point Width Checking
+
+Similarly, assigning a 64-bit float literal to a `float<32>` variable triggers a warning (W006) because it may lose precision. The language defaults to `float` as 64-bit.
+
+```c
+float<32> a = 3.14;  // Warning: possible data loss from float64 to float32
+float<64> b = 3.14;  // OK
+```
+
+These checks help prevent accidental overflow and data loss.
 
 ---
 

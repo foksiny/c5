@@ -10,6 +10,7 @@ class SemanticAnalyzer:
         self.functions = {}
         self.structs = {}
         self.enums = {}
+        self.types = {}  # Type definitions (union/variant types)
         self.used_vars = set()
         self.used_funcs = set(['main'])
         self.source_code = source_code
@@ -17,6 +18,7 @@ class SemanticAnalyzer:
         self.filename = filename or "unknown"
         self.show_warnings = True
         self.library_funcs = set()  # Functions from library files (no dead code warnings)
+        self.library_vars = set()   # Variables from library files (no dead code warnings)
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -39,7 +41,9 @@ class SemanticAnalyzer:
             "E018": ("Unknown Type", "The compiler does not recognize this type."),
             "E019": ("L-Value Error", "Left side of assignment must be writable."),
             "E021": ("Main Signature Error", "main() must return int or void."),
-            "E041": ("Invalid main arguments", "main must have 0 or 2 arguments.")
+            "E041": ("Invalid main arguments", "main must have 0 or 2 arguments."),
+            "E042": ("Const Violation", "Cannot modify a const variable."),
+            "E023": ("Integer Overflow", "Integer literal exceeds the range of the target type."),
         }
 
         self.warning_db = {
@@ -48,6 +52,7 @@ class SemanticAnalyzer:
             "W003": ("Unreachable Code", "Code after return/break."),
             "W004": ("Neutral Addition", "Redundant (+0/-0) operation."),
             "W005": ("Neutral Multiplication", "Redundant (*1//1) operation."),
+            "W006": ("Narrowing Float Conversion", "Possible data loss during float64 to float32 conversion."),
             "W007": ("Narrowing conversion", "Possible data loss during float to int conversion."),
             "W008": ("Dead Code (Function)", "Local function declared and never called."),
             "W012": ("Empty Block", "Control statement without execution body.")
@@ -105,7 +110,7 @@ class SemanticAnalyzer:
         
         # Final checks - use stored variable locations
         for name in self.scopes[0]:
-            if name not in self.used_vars and name not in self.functions:
+            if name not in self.used_vars and name not in self.functions and name not in self.library_vars:
                 loc = self.var_locs.get(name, (1, 0))
                 self.add_warning("W001", name, loc)
         
@@ -135,7 +140,12 @@ class SemanticAnalyzer:
         if tag == 'id':
             name = node[1]
             for scope in reversed(self.scopes):
-                if name in scope: return scope[name]
+                if name in scope:
+                    ty = scope[name]
+                    # Strip const modifier for type checking
+                    if ty.startswith('const '):
+                        ty = ty[6:]  # Remove "const " prefix
+                    return ty
         if tag == 'binop':
             op = node[1]
             left_ty = self._get_type(node[2])
@@ -172,6 +182,15 @@ class SemanticAnalyzer:
             if op == '&': return sub_ty + '*'
             if op == '*': return sub_ty[:-1] if sub_ty.endswith('*') else 'unknown'
             return sub_ty
+        if tag == 'namespace_access':
+            name = f"{node[1]}::{node[2]}"
+            # Try global scope (where namespaced variables are)
+            if name in self.scopes[0]: return self.scopes[0][name]
+            # Try enums
+            if node[1] in self.enums: return "int"
+            # Try functions (for function pointers)
+            if name in self.functions: return self.functions[name][0]
+            return "unknown"
         if tag == 'member_access':
             base_ty = self._get_type(node[1])
             # Handle pointer to struct (from array of structs)
@@ -228,7 +247,14 @@ class SemanticAnalyzer:
             if name in self.scopes[-1]: self.add_error("E015", name, loc)
             self.scopes[-1][name] = ty
             self.var_locs[name] = loc  # Store variable location
-            if init: self._analyze_node(init)
+            if init:
+                self._analyze_node(init)
+                # Check integer literal range if initializing with a number literal
+                if init[0] == 'number' and isinstance(init[1], int):
+                    self._check_int_literal_range(ty, init[1], loc)
+                # Check float width mismatch: assigning float literal (64-bit) to float<32>
+                if init[0] == 'float' and ty == 'float<32>':
+                    self.add_warning("W006", "Possible data loss during float64 to float32 conversion", loc)
         
         elif tag == 'pub_var':
             ty, name, init = node[1], node[2], node[3]
@@ -241,6 +267,25 @@ class SemanticAnalyzer:
             self._analyze_node(right)
             l_ty, r_ty = self._get_type(left), self._get_type(right)
             if l_ty == 'int' and r_ty == 'float': self.add_warning("W007", loc=loc)
+
+            # Check integer literal range if assigning a number literal to a sized integer
+            if right[0] == 'number' and isinstance(right[1], int):
+                self._check_int_literal_range(l_ty, right[1], loc)
+
+            # Check float width mismatch: assigning float (64-bit) to float<32>
+            if right[0] == 'float' and l_ty == 'float<32>':
+                self.add_warning("W006", "Possible data loss during float64 to float32 conversion", loc)
+
+            # Check if left-hand side is a const variable
+            if left[0] == 'id':
+                name = left[1]
+                # Check all scopes for the variable
+                for scope in self.scopes:
+                    if name in scope:
+                        var_type = scope[name]
+                        if var_type.startswith('const '):
+                            self.add_error("E042", f"'{name}' is const and cannot be modified", loc)
+                        break
 
         elif tag == 'binop':
             op, left, right = node[1], node[2], node[3]
@@ -292,7 +337,7 @@ class SemanticAnalyzer:
             for s in node[4]: self._analyze_node(s)
             curr_scope = self.scopes.pop()
             for var in curr_scope:
-                if var not in self.used_vars and var not in self.functions:
+                if var not in self.used_vars and var not in self.functions and var not in self.library_vars:
                     var_loc = self.var_locs.get(var, loc)
                     self.add_warning("W001", var, var_loc)
 
@@ -311,6 +356,25 @@ class SemanticAnalyzer:
                     break
             if not found: self.add_error("E001", name, loc)
             else: self.used_vars.add(name)
+        
+        elif tag == 'namespace_access':
+            base, name = node[1], node[2]
+            namespaced_name = f"{base}::{name}"
+            found = False
+            # Check for namespaced variables in global scope
+            if namespaced_name in self.scopes[0]:
+                found = True
+                self.used_vars.add(namespaced_name)
+            # Check for enums
+            elif base in self.enums or namespaced_name in self.enums:
+                found = True
+            # Check for functions (for function pointers)
+            elif namespaced_name in self.functions:
+                found = True
+                self.used_funcs.add(namespaced_name)
+            
+            if not found:
+                self.add_error("E016", namespaced_name, loc)
         
         elif tag == 'member_access':
             base_ty = self._get_type(node[1])
@@ -383,6 +447,39 @@ class SemanticAnalyzer:
             for elem in node[1]:
                 self._analyze_node(elem)
 
+    def _check_int_literal_range(self, ty, value, loc):
+        """Check if an integer literal fits within the range of the given type."""
+        # Handle signed/unsigned modifiers
+        signed = True
+        base_ty = ty
+        if ty.startswith('unsigned '):
+            signed = False
+            base_ty = ty[9:]  # strip 'unsigned '
+        elif ty.startswith('signed '):
+            signed = True
+            base_ty = ty[7:]  # strip 'signed '
+        # Determine bit width
+        if base_ty == 'int':
+            bits = 64
+        elif base_ty == 'char':
+            bits = 8
+        elif base_ty.startswith('int<') and base_ty.endswith('>'):
+            try:
+                bits = int(base_ty[4:-1])
+            except:
+                return  # Invalid format, skip
+        else:
+            return  # Not an integer type with width
+        # Compute min and max
+        if signed:
+            min_val = -(1 << (bits - 1))
+            max_val = (1 << (bits - 1)) - 1
+        else:
+            min_val = 0
+            max_val = (1 << bits) - 1
+        if value < min_val or value > max_val:
+            self.add_error("E023", f"Value {value} does not fit in {ty} (range {min_val}..{max_val})", loc)
+
     def _scan_declarations(self, ast):
         target = ast
         if isinstance(ast, tuple) and ast[0] == 'program': target = ast[1]
@@ -400,6 +497,10 @@ class SemanticAnalyzer:
                 self.structs[node[1]] = node[2]
             elif node[0] == 'enum_decl':
                 self.enums[node[1]] = node[2]
+            elif node[0] == 'type_decl':
+                ty_name = node[1]
+                if ty_name in self.types: self.add_error("E015", ty_name, loc)
+                self.types[ty_name] = node[2]  # Store list of allowed types
             elif node[0] == 'pub_var':
                 ty, name = node[1], node[2]
                 if name in self.scopes[0]: self.add_error("E015", name, loc)

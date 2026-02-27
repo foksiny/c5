@@ -1,0 +1,14 @@
+include <std.c5h>
+
+type bool {
+    int<1> // accepts 1-bit integer (1 and 0)
+    // you can add ',' to add other supported types (including Struct and Enum for all types
+    // of structs and enums, or only the name of an already defined enum or struct to be
+    // only supported the mentioned struct or enum)
+};
+
+void main() {
+    bool is_true = 1;
+
+    std::printf("is true?: %d\n", is_true);
+}
