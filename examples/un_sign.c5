@@ -7,7 +7,7 @@ unsigned int<32> ret_u32() {
 void main() {
     unsigned int<32> a = ret_u32();
 
-    signed char b = 'b';
+    signed int<2> b = 1;
 
-    std::printf("%u | %c\n", a, b);
+    std::printf("%u | %d\n", a, b);
 }

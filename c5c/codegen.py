@@ -31,6 +31,9 @@ class CodeGen:
         if ty.endswith('*'): return 8
         if ty == 'fnptr': return 8  # Function pointer type
         if ty.startswith('array<'): return 24  # ptr + len + cap
+        # Strip const modifier if present
+        if ty.startswith('const '):
+            ty = ty[6:]
         # Handle signed/unsigned types
         if ty.startswith('unsigned ') or ty.startswith('signed '):
             ty = ty.split(' ', 1)[1]  # Strip the modifier for size calculation

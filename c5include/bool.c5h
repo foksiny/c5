@@ -1,6 +1,6 @@
 type Bool {
-    int<1>
+    const unsigned int<1>
 };
 
-let const int<1> true  = 1;
-let const int<1> false = 0;
+let const unsigned int<1> true  = 1;
+let const unsigned int<1> false = 0;

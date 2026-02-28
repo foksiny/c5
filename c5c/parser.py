@@ -190,15 +190,19 @@ class Parser:
         # Handle signed/unsigned/const modifiers
         sign_modifier = None
         const_modifier = False
-        if self.peek().type == 'SIGNED':
-            self.consume('SIGNED')
-            sign_modifier = 'signed'
-        elif self.peek().type == 'UNSIGNED':
-            self.consume('UNSIGNED')
-            sign_modifier = 'unsigned'
-        elif self.peek().type == 'CONST':
-            self.consume('CONST')
-            const_modifier = True
+        # Loop to allow any combination and order of modifiers
+        while True:
+            if self.peek().type == 'SIGNED':
+                self.consume('SIGNED')
+                sign_modifier = 'signed'
+            elif self.peek().type == 'UNSIGNED':
+                self.consume('UNSIGNED')
+                sign_modifier = 'unsigned'
+            elif self.peek().type == 'CONST':
+                self.consume('CONST')
+                const_modifier = True
+            else:
+                break
         
         if self.peek().type == 'VOID':
             self.consume('VOID')

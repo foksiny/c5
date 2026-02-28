@@ -1,4 +1,5 @@
 import sys
+import struct
 
 class SemanticAnalyzer:
     def __init__(self, source_code=None, filename=None):
@@ -85,7 +86,7 @@ class SemanticAnalyzer:
         location_str = f"{self.filename}:{line}:{col}"
         source_context = self._format_source_line(line, col)
         
-        error_msg = f"{location_str}: \033[91merror\033[0m: {m}\n{source_context}\n  \033[93m💡 Tip:\033[0m {t}"
+        error_msg = f"{location_str}: \033[91merror\033[0m: {m}\n{source_context}\n  \033[93mTip:\033[0m {t}"
         self.errors.append(error_msg)
         
     def add_warning(self, code, msg=None, loc=None):
@@ -96,7 +97,7 @@ class SemanticAnalyzer:
         location_str = f"{self.filename}:{line}:{col}"
         source_context = self._format_source_line(line, col)
         
-        warning_msg = f"{location_str}: \033[93mwarning\033[0m: {m}\n{source_context}\n  \033[94m💡 Tip:\033[0m {t}"
+        warning_msg = f"{location_str}: \033[93mwarning\033[0m: {m}\n{source_context}\n  \033[94mTip:\033[0m {t}"
         self.warnings.append(warning_msg)
 
     def analyze(self, ast, require_main=True, show_warnings=True):
@@ -123,12 +124,12 @@ class SemanticAnalyzer:
                 self.add_warning("W008", name, loc)
 
         if self.errors:
-            print(f"\n\033[91m🚨 C5 COMPILER: {len(self.errors)} ERROR(S) FOUND\033[0m")
+            print(f"\n\033[91mC5 COMPILER: {len(self.errors)} ERROR(S) FOUND\033[0m")
             for e in sorted(list(set(self.errors))): print(e)
             sys.exit(1)
             
         if self.warnings and self.show_warnings:
-            print(f"\n\033[93m⚠️  C5 COMPILER: {len(self.warnings)} QUALITY WARNING(S)\033[0m")
+            print(f"\n\033[93mC5 COMPILER: {len(self.warnings)} QUALITY WARNING(S)\033[0m")
             for w in sorted(list(set(self.warnings))): print(w)
 
     def _get_type(self, node):
@@ -188,7 +189,7 @@ class SemanticAnalyzer:
             # Try global scope (where namespaced variables are)
             if name in self.scopes[0]: return self.scopes[0][name]
             # Try enums
-            if node[1] in self.enums: return "int"
+            if node[1] in self.enums: return node[1]
             # Try functions (for function pointers)
             if name in self.functions: return self.functions[name][0]
             return "unknown"
@@ -238,6 +239,174 @@ class SemanticAnalyzer:
             return self.functions.get(name, ("int", 0, False, False))[0]
         return "unknown"
 
+    # Helper methods for type checking
+    def _is_integer_type(self, ty):
+        """Check if a type string represents an integer type."""
+        # Strip const modifier if present
+        if ty.startswith('const '):
+            ty = ty[6:]
+        if ty in ('int', 'char'):
+            return True
+        if ty.startswith('unsigned ') or ty.startswith('signed '):
+            base = ty.split(' ', 1)[1]
+            return base in ('int', 'char') or base.startswith('int<')
+        if ty.startswith('int<') and ty.endswith('>'):
+            return True
+        return False
+
+    def _is_float_type(self, ty):
+        """Check if a type is a floating-point type."""
+        # Strip const modifier if present
+        if ty.startswith('const '):
+            ty = ty[6:]
+        return ty in ('float', 'float<32>', 'float<64>')
+
+    def _normalize_type(self, ty):
+        """Normalize type aliases to canonical forms."""
+        if ty == 'int':
+            return 'int<64>'
+        if ty == 'float':
+            return 'float<64>'
+        return ty
+
+    def _types_compatible(self, target_type, source_type):
+        """Check if source_type can be assigned to target_type."""
+        # If target is a union type, check if source matches any member
+        if target_type in self.types:
+            for mem_type in self.types[target_type]:
+                if self._types_compatible(mem_type, source_type):
+                    return True
+            return False
+        # If source is a union type, cannot assign to a non-union
+        if source_type in self.types:
+            return False
+        # Normalize and compare
+        t_norm = self._normalize_type(target_type)
+        s_norm = self._normalize_type(source_type)
+        return t_norm == s_norm
+
+    def _int_literal_fits(self, ty, value):
+        """Check if an integer literal fits in the given type without adding error."""
+        # Strip const modifier if present
+        if ty.startswith('const '):
+            ty = ty[6:]
+        signed = True
+        base_ty = ty
+        if ty.startswith('unsigned '):
+            signed = False
+            base_ty = ty[9:]
+        elif ty.startswith('signed '):
+            signed = True
+            base_ty = ty[7:]
+        if base_ty == 'int':
+            bits = 64
+        elif base_ty == 'char':
+            bits = 8
+        elif base_ty.startswith('int<') and base_ty.endswith('>'):
+            try:
+                bits = int(base_ty[4:-1])
+            except:
+                return False
+        else:
+            return False
+        if signed:
+            min_val = -(1 << (bits - 1))
+            max_val = (1 << (bits - 1)) - 1
+        else:
+            min_val = 0
+            max_val = (1 << bits) - 1
+        return min_val <= value <= max_val
+
+    def _check_int_literal_against_type(self, ty, value, loc):
+        """Check integer literal against a type, handling unions."""
+        if ty in self.types:
+            # Union type: check if any integer member can hold the value
+            members = self.types[ty]
+            int_members = [m for m in members if self._is_integer_type(m)]
+            if not int_members:
+                self.add_error("E002", f"Integer literal cannot initialize union {ty} (no integer members)", loc)
+                return
+            fits = any(self._int_literal_fits(m, value) for m in int_members)
+            if not fits:
+                self.add_error("E023", f"Integer literal {value} does not fit in any integer member of {ty}", loc)
+        elif self._is_integer_type(ty):
+            self._check_int_literal_range(ty, value, loc)
+        else:
+            self.add_error("E002", f"Integer literal cannot initialize type {ty}", loc)
+
+    def _float_literal_exact_float32(self, val):
+        """Check if a float value can be exactly represented as float32."""
+        try:
+            packed = struct.pack('f', val)
+            restored = struct.unpack('f', packed)[0]
+            return val == restored
+        except:
+            return False
+
+    def _check_float_literal_against_type(self, ty, value, loc):
+        """Check float literal against a type, handling exact representation for float<32>."""
+        # Strip const modifier if present
+        base_ty = ty
+        if ty.startswith('const '):
+            base_ty = ty[6:]
+        if ty in self.types:
+            # Union type: check if any member can accept the float
+            members = self.types[ty]
+            fits = False
+            for mem in members:
+                # Strip const from member types for comparison
+                mem_clean = mem[6:] if mem.startswith('const ') else mem
+                if mem_clean == 'float' or mem_clean == 'float<64>':
+                    fits = True
+                    break
+                if mem_clean == 'float<32>':
+                    if self._float_literal_exact_float32(value):
+                        fits = True
+                        break
+            if not fits:
+                self.add_error("E002", f"Float literal {value} cannot initialize union {ty}", loc)
+        else:
+            if base_ty == 'float' or base_ty == 'float<64>':
+                # Always okay
+                return
+            if base_ty == 'float<32>':
+                if not self._float_literal_exact_float32(value):
+                    self.add_error("E002", f"Float literal {value} cannot be exactly represented in float<32>", loc)
+            else:
+                self.add_error("E002", f"Float literal cannot initialize type {ty}", loc)
+
+    def _eval_constant_int(self, node):
+        """Evaluate an expression to a constant integer if possible."""
+        if not node or not isinstance(node, tuple):
+            return None
+        tag = node[0]
+        if tag == 'number':
+            # Ensure it's an integer, not a float or char
+            if isinstance(node[1], int):
+                return node[1]
+            return None
+        elif tag == 'binop':
+            left = self._eval_constant_int(node[2])
+            right = self._eval_constant_int(node[3])
+            if left is None or right is None:
+                return None
+            op = node[1]
+            try:
+                if op == '+': return left + right
+                if op == '-': return left - right
+                if op == '*': return left * right
+                if op == '/': return left // right  # integer division
+                if op == '%': return left % right
+                if op == '<<': return left << right
+                if op == '>>': return left >> right
+                if op == '&': return left & right
+                if op == '|': return left | right
+                if op == '^': return left ^ right
+            except Exception:
+                return None
+            return None
+        return None
+
     def _analyze_node(self, node):
         if not node or not isinstance(node, tuple): return
         tag = node[0]
@@ -250,12 +419,46 @@ class SemanticAnalyzer:
             self.var_locs[name] = loc  # Store variable location
             if init:
                 self._analyze_node(init)
-                # Check integer literal range if initializing with a number literal
-                if init[0] == 'number' and isinstance(init[1], int):
-                    self._check_int_literal_range(ty, init[1], loc)
-                # Check float width mismatch: assigning float literal (64-bit) to float<32>
-                if init[0] == 'float' and ty == 'float<32>':
-                    self.add_warning("W006", "Possible data loss during float64 to float32 conversion", loc)
+                if init[0] == 'init_list':
+                    # Struct or array initializer
+                    if ty in self.structs:
+                        fields = self.structs[ty]  # list of (field_type, field_name)
+                        elements = init[1]
+                        for i, elem in enumerate(elements):
+                            if i >= len(fields):
+                                self.add_error("E015", f"too many initializers for struct {ty}", loc)
+                                break
+                            field_type = fields[i][0]
+                            # Check element compatibility
+                            if elem[0] == 'number' and isinstance(elem[1], int):
+                                self._check_int_literal_against_type(field_type, elem[1], loc)
+                            elif elem[0] == 'float':
+                                self._check_float_literal_against_type(field_type, elem[1], loc)
+                            else:
+                                elem_type = self._get_type(elem)
+                                if not self._types_compatible(field_type, elem_type):
+                                    self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
+                    # TODO: array initializer type checking
+                elif init[0] == 'lambda':
+                    # Lambda initializer: skip type check (the variable's type is the lambda's return type)
+                    # The lambda body will be analyzed separately.
+                    pass
+                elif init[0] == 'number' and isinstance(init[1], int):
+                    self._check_int_literal_against_type(ty, init[1], loc)
+                elif init[0] == 'float':
+                    self._check_float_literal_against_type(ty, init[1], loc)
+                elif init[0] == 'binop':
+                    const_val = self._eval_constant_int(init)
+                    if const_val is not None:
+                        self._check_int_literal_against_type(ty, const_val, loc)
+                    else:
+                        init_type = self._get_type(init)
+                        if not self._types_compatible(ty, init_type):
+                            self.add_error("E002", f"Cannot initialize {ty} with {init_type}", loc)
+                else:
+                    init_type = self._get_type(init)
+                    if not self._types_compatible(ty, init_type):
+                        self.add_error("E002", f"Cannot initialize {ty} with {init_type}", loc)
         
         elif tag == 'pub_var':
             ty, name, init = node[1], node[2], node[3]
@@ -267,15 +470,15 @@ class SemanticAnalyzer:
             self._analyze_node(left)
             self._analyze_node(right)
             l_ty, r_ty = self._get_type(left), self._get_type(right)
-            if l_ty == 'int' and r_ty == 'float': self.add_warning("W007", loc=loc)
-
-            # Check integer literal range if assigning a number literal to a sized integer
+            # Check integer literal range/type
             if right[0] == 'number' and isinstance(right[1], int):
-                self._check_int_literal_range(l_ty, right[1], loc)
-
-            # Check float width mismatch: assigning float (64-bit) to float<32>
-            if right[0] == 'float' and l_ty == 'float<32>':
-                self.add_warning("W006", "Possible data loss during float64 to float32 conversion", loc)
+                self._check_int_literal_against_type(l_ty, right[1], loc)
+            elif right[0] == 'float':
+                self._check_float_literal_against_type(l_ty, right[1], loc)
+            else:
+                # For non-literals, require type compatibility
+                if not self._types_compatible(l_ty, r_ty):
+                    self.add_error("E002", f"Cannot assign {r_ty} to {l_ty}", loc)
 
             # Check if left-hand side is a const variable
             if left[0] == 'id':
