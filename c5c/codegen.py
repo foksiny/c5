@@ -1162,9 +1162,13 @@ __c5_str_sub:
                     # We'll generate: mov $1, %rax; test %rax, %rax; jmp catch_label (always)
                     # But that would always jump, which is okay if the error is definite.
                     # However, we don't know if the error is definite. For now, skip generic handling.
-                    # We'll just not generate a check; the error will be ignored at runtime.
-                    # This is a limitation.
-                    pass
+                    # Generic error handling: generate an unconditional jump to catch with error message
+                    handler_label = f".Lerr_{self.label_count}_{err_counter}"
+                    err_counter += 1
+                    err_msg = msg if msg else f"Error: {code}"
+                    msg_label = self.get_string_label(err_msg)
+                    error_handlers.append((handler_label, msg_label))
+                    self.text.append(f"    jmp {handler_label}")
             # Generate the statement normally
             self.gen_stmt(stmt)
         
