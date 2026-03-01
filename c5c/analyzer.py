@@ -249,11 +249,11 @@ class SemanticAnalyzer:
             if target[0] == 'member_access':
                 method = target[2]
                 base_ty = self._get_type(target[1])
-                if base_ty.startswith('array<'):
+                if base_ty.startswith('array<') or base_ty == 'string' or base_ty == 'char*':
                     if method == 'length': return 'int'
-                    if method == 'pop':
+                    if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
-                    return 'void'
+                    if base_ty.startswith('array<'): return 'void'
             name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
             # Handle built-in c_str() function
             if name == 'c_str':
@@ -603,16 +603,18 @@ class SemanticAnalyzer:
             if not found:
                 self.add_error("E016", namespaced_name, loc)
         
-        elif tag == 'member_access':
+        if tag == 'member_access':
             base_ty = self._get_type(node[1])
-            # Allow member access on structs, pointers to structs (from array of structs), and arrays
-            is_valid = base_ty in self.structs or base_ty.startswith('array<')
+            # Allow member access on structs, pointers to structs (from array of structs), arrays, strings, and char*
+            is_valid = base_ty in self.structs or base_ty.startswith('array<') or base_ty == 'string' or base_ty == 'char*'
             # Also allow pointer to struct (returned from array access on struct arrays)
             if base_ty.endswith('*') and base_ty[:-1] in self.structs:
                 is_valid = True
             if base_ty != 'unknown' and not is_valid:
                 self.add_error("E012", base_ty, loc)
             self._analyze_node(node[1])
+
+
 
         elif tag == 'arrow_access':
             base_ty = self._get_type(node[1])

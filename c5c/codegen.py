@@ -152,10 +152,11 @@ class CodeGen:
             if target[0] == 'member_access':
                 method = target[2]
                 base_ty = self._get_expr_type(target[1])
-                if base_ty.startswith('array<'):
+                if base_ty.startswith('array<') or base_ty == 'string' or base_ty == 'char*':
                     if method == 'length':
                         return 'int'
-                    if method == 'pop':
+
+                    if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
                 return 'void'
             name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
@@ -1989,6 +1990,17 @@ __c5_str_sub:
                     elif method == 'clear':
                         self.text.append(f"    movq $0, {arr_ref(8)}")
                         return 'void'
+                elif base_ty == 'string' or base_ty == 'char*':
+                    if method == 'length':
+                        if '(%rbp)' in base_addr:
+                            off = int(base_addr.split('(')[0])
+                            self.text.append(f"    mov {off}(%rbp), %rdi")
+                        elif '(%rip)' in base_addr:
+                            self.text.append(f"    mov {base_addr}, %rdi")
+                        else:
+                            self.text.append(f"    mov {base_addr}, %rdi")
+                        self.text.append("    call strlen@PLT")
+                        return 'int'
                 
                 raise Exception(f"Unknown method {method} on type {base_ty}")
             

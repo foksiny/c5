@@ -318,11 +318,12 @@ void main() {
 ```
 
 ### 6. String Power
-Strings in C5 are more than just pointers; they support arithmetic.
+Strings in C5 are more than just pointers; they support arithmetic and built-in methods.
 ```c
 string s = "Hello";
 s = s + " World";   // Concatenation
 s = s - " Hello";   // Result: " World"
+int len = s.length(); // Get length (6)
 ```
 
 #### C String Interoperability
@@ -343,12 +344,17 @@ void main() {
     string a2 = "Hello, world!";
     char b2 = a2[1];  // 'e'
     std::printf("str: %s\nchar: %c\n", a2, b2);
+
+    // Use .length() on both types
+    int len1 = a.length();
+    int len2 = a2.length();
 }
 ```
 
 **Key features:**
 - `c_str(string)`: Converts a C5 `string` to a C `char*` pointer for use with C library functions
 - `[]` operator: Works on both `string` and `char*` types to access individual characters
+- `.length()` method: Returns the string length (available for both `string` and `char*`)
 - Returns `char` type when indexing into strings
 
 ### 7. Structs & Enums

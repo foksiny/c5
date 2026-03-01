@@ -1,0 +1,11 @@
+include <std.c5h>
+
+void main() {
+    string mystr = "Hello"; // c strings (char*) also supports .length() in this language.
+
+    std::printf("str: \"%s\", size: %d\n", mystr, mystr.length());
+
+    mystr = mystr + ", World!";
+
+    std::printf("str: \"%s\", size: %d\n", mystr, mystr.length());
+}
