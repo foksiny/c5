@@ -43,6 +43,79 @@ When you use `include <file.c5h>`, the compiler searches in this order:
 
 ---
 
+## 🎨 Syntax Highlighting
+
+C5 comes with syntax highlighting support for popular editors.
+
+### Emacs
+
+The `syntax_highlight/c5-mode.el` file provides a major mode for C5.
+
+**Installation:**
+
+1. Copy `c5-mode.el` to your Emacs load path (e.g., `~/.emacs.d/lisp/`):
+   ```bash
+   mkdir -p ~/.emacs.d/lisp
+   cp syntax_highlight/c5-mode.el ~/.emacs.d/lisp/
+   ```
+
+2. Add the following to your `~/.emacs` or `~/.emacs.d/init.el`:
+   ```elisp
+   ;; Add C5 mode to load path
+   (add-to-list 'load-path "~/.emacs.d/lisp")
+   
+   ;; Require c5-mode
+   (require 'c5-mode)
+   
+   ;; Associate .c5 and .c5h files with c5-mode
+   (add-to-list 'auto-mode-alist '("\\.c5\\'" . c5-mode))
+   (add-to-list 'auto-mode-alist '("\\.c5h\\'" . c5-mode))
+   ```
+
+3. Reload your configuration or restart Emacs.
+
+**Features:**
+- Syntax highlighting for keywords, types, built-in functions, strings, comments, and numbers
+- Support for C-style comments (`//` and `/* */`)
+- Automatic file association for `.c5` and `.c5h` files
+- Basic indentation support
+
+### Neovim / Vim
+
+The `syntax_highlight/c5.vim` file provides syntax highlighting for C5.
+
+**Installation:**
+
+1. Copy `c5.vim` to your Vim runtime directory:
+   ```bash
+   # For Neovim (recommended)
+   mkdir -p ~/.config/nvim/syntax
+   cp syntax_highlight/c5.vim ~/.config/nvim/syntax/
+   
+   # For Vim
+   mkdir -p ~/.vim/syntax
+   cp syntax_highlight/c5.vim ~/.vim/syntax/
+   ```
+
+2. Create or edit your `~/.config/nvim/filetype.vim` (or `~/.vim/filetype.vim`) to detect C5 files:
+   ```vim
+   augroup filetypedetect
+     autocmd BufNewFile,BufRead *.c5 set filetype=c5
+     autocmd BufNewFile,BufRead *.c5h set filetype=c5
+   augroup END
+   ```
+
+3. Reload Vim/Neovim or run `:filetype detect`.
+
+**Features:**
+- Full syntax highlighting for C5 language constructs
+- Support for parameterized types (`int<32>`, `float<64>`)
+- Highlighting for namespace resolution (`::`) and arrow operator (`->`)
+- Macro definition highlighting
+- Comment and string highlighting with escape sequences
+
+---
+
 ## 📖 Language Documentation
 
 ### 1. Basic Types
