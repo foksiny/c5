@@ -23,6 +23,8 @@ def lex(code):
         ('CASE',      r'case\b'),
         ('DEFAULT',   r'default\b'),
         ('BREAK',     r'break\b'),
+        ('TRY',       r'try\b'),
+        ('CATCH',     r'catch\b'),
         ('WHILE',     r'while\b'),
         ('FOR',       r'for\b'),
         ('FOREACH',   r'foreach\b'),

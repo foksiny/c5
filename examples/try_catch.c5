@@ -1,0 +1,9 @@
+include <std.c5h>
+
+void main() {
+    try {
+        int<1> a = 5;
+    } catch (e) {
+        std::printf("Error: %s\n", e);
+    }
+}

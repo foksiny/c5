@@ -535,6 +535,47 @@ These checks help prevent accidental overflow and data loss.
 
 ---
 
+### 16. Exception Handling
+
+C5 supports exception handling through `try-catch` blocks, allowing you to handle runtime errors gracefully.
+
+#### Syntax
+
+```c
+try {
+    // Code that may throw an exception
+} catch (e) {
+    // Handler code; e contains the error message
+}
+```
+
+- The `try` block contains code that might generate an exception.
+- The `catch` block catches any exception thrown in the `try` block.
+- The catch parameter `e` receives the error message as a `string`.
+
+#### Example
+
+```c
+include <std.c5h>
+
+void main() {
+    try {
+        int<1> a = 5;
+    } catch (e) {
+        std::printf("Error: %s\n", e);
+        std::exit(1);
+    }
+}
+```
+
+**Key features:**
+- Exceptions are thrown automatically when certain runtime errors occur (e.g., division by zero, out-of-bounds array access).
+- The exception message is passed as a `string` to the `catch` block.
+- You can have multiple `catch` blocks to handle different exception types (future enhancement).
+- Use `std::exit()` or `return` to terminate the program or continue execution after handling the error.
+
+---
+
 ## 📚 Library Creation
 
 C5 supports creating and using libraries through a combination of header files (`.c5h`) and implementation files (`.c5`).

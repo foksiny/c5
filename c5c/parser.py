@@ -393,6 +393,27 @@ class Parser:
         self.consume('SEMI')
         return ('break_stmt', loc)
 
+    def parse_try_catch_stmt(self):
+        loc = self._loc()
+        self.consume('TRY')
+        self.consume('LBRACE')
+        try_body = []
+        while self.peek().type != 'RBRACE':
+            try_body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        
+        self.consume('CATCH')
+        self.consume('LPAREN')
+        catch_param = self.consume('ID').value
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        catch_body = []
+        while self.peek().type != 'RBRACE':
+            catch_body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        
+        return ('try_catch_stmt', try_body, catch_param, catch_body, loc)
+
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
@@ -408,6 +429,8 @@ class Parser:
             return self.parse_do_while_stmt()
         if self.peek().type == 'BREAK':
             return self.parse_break_stmt()
+        if self.peek().type == 'TRY':
+            return self.parse_try_catch_stmt()
         
         loc = self._loc()
         is_decl = False

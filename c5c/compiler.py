@@ -9,8 +9,8 @@ def _strip_loc(node):
         if isinstance(node, list):
             return [_strip_loc(n) for n in node]
         return node
-    # Remove last element if it's a location tuple (line, col)
-    if len(node) >= 2:
+    # Remove last element if it's a location tuple (line, col), except for try_catch_stmt
+    if len(node) >= 2 and node[0] != 'try_catch_stmt':
         last = node[-1]
         if isinstance(last, tuple) and len(last) == 2 and all(isinstance(x, int) for x in last):
             # This looks like a location tuple, strip it
@@ -214,7 +214,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(optimizer=opt)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
     return cg.generate(optimized_ast)
 
 
@@ -325,5 +325,5 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(optimizer=opt)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
     return cg.generate(optimized_ast)

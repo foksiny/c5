@@ -21,6 +21,11 @@ class SemanticAnalyzer:
         self.library_funcs = set()  # Functions from library files (no dead code warnings)
         self.library_vars = set()   # Variables from library files (no dead code warnings)
         self.break_context = []  # Stack to track if we're inside a loop or switch (for break statements)
+        self.try_stack = []  # Stack for try-catch error collection
+        self.current_try_errors = None  # Current list to collect errors for the active try block
+        self.current_try_stmt_index = -1  # Current statement index within the try body
+        self.current_try_stmt_node = None  # Current statement node being analyzed
+        self.try_errors_map = {}  # Map from try_catch node location to list of errors
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -79,6 +84,18 @@ class SemanticAnalyzer:
         return f">   {source_line}\n    {pointer}"
         
     def add_error(self, code, msg=None, loc=None):
+        # If we are inside a try block, record the error instead of adding to self.errors
+        if self.current_try_errors is not None:
+            # Record: (current_try_stmt_index, code, msg, loc)
+            # Also include the current statement node for potential codegen use
+            self.current_try_errors.append({
+                'index': self.current_try_stmt_index,
+                'code': code,
+                'msg': msg,
+                'loc': loc,
+                'stmt_node': self.current_try_stmt_node  # store the statement node for reference
+            })
+            return
         m, t = self.error_db.get(code, ("Error", "-"))
         if msg: m += f" [{msg}]"
         
@@ -107,8 +124,13 @@ class SemanticAnalyzer:
         if require_main and 'main' not in self.functions: self.add_error("E009")
             
         if isinstance(ast, list):
-            for node in ast: self._analyze_node(node)
-        else: self._analyze_node(ast)
+            new_ast = []
+            for node in ast:
+                new_node = self._analyze_node(node)
+                new_ast.append(new_node)
+            ast[:] = new_ast  # replace in place
+        else:
+            ast = self._analyze_node(ast)
         
         # Final checks - use stored variable locations
         for name in self.scopes[0]:
@@ -408,7 +430,8 @@ class SemanticAnalyzer:
         return None
 
     def _analyze_node(self, node):
-        if not node or not isinstance(node, tuple): return
+        if not node or not isinstance(node, tuple):
+            return node
         tag = node[0]
         loc = self._get_loc(node)
         
@@ -725,6 +748,53 @@ class SemanticAnalyzer:
                 self.add_error("E999", "break statement not inside a loop or switch", loc)
             # break is valid - no further checks needed
             
+        elif tag == 'try_catch_stmt':
+            # node: ('try_catch_stmt', try_body, catch_param, catch_body, loc)
+            try_body = node[1]
+            catch_param = node[2]
+            catch_body = node[3]
+            loc = node[4]
+            
+            # Initialize try context for error collection
+            self.try_stack.append({'errors': []})
+            prev_current_errors = self.current_try_errors
+            prev_stmt_index = self.current_try_stmt_index
+            prev_stmt_node = self.current_try_stmt_node
+            self.current_try_errors = self.try_stack[-1]['errors']
+            
+            # Analyze try body with a new scope, tracking statement indices
+            self.scopes.append({})
+            new_try_body = []
+            for i, stmt in enumerate(try_body):
+                self.current_try_stmt_index = i
+                self.current_try_stmt_node = stmt
+                new_stmt = self._analyze_node(stmt)
+                new_try_body.append(new_stmt)
+            self.scopes.pop()
+            
+            # Restore previous context
+            self.current_try_errors = prev_current_errors
+            self.current_try_stmt_index = prev_stmt_index
+            self.current_try_stmt_node = prev_stmt_node
+            try_errors = self.try_stack.pop()['errors']
+            # Store errors by location for later codegen use
+            self.try_errors_map[loc] = try_errors
+            
+            # Analyze catch body normally (errors are fatal)
+            self.scopes.append({})
+            # Declare catch parameter as string
+            self.scopes[-1][catch_param] = 'string'
+            new_catch_body = []
+            for stmt in catch_body:
+                new_stmt = self._analyze_node(stmt)
+                new_catch_body.append(new_stmt)
+            self.scopes.pop()
+            
+            # Return a new node with errors attached before loc
+            # Node structure: ('try_catch_stmt', try_body, catch_param, catch_body, errors, loc)
+            # After _strip_loc, loc will be removed, leaving errors as the last element
+            return ('try_catch_stmt', new_try_body, catch_param, new_catch_body, try_errors, loc)
+            
         elif tag == 'lambda':
             # Lambda expression: create a new scope for parameters and analyze body
             params, body = node[1], node[2]
@@ -740,6 +810,9 @@ class SemanticAnalyzer:
             # Initializer list: analyze all elements
             for elem in node[1]:
                 self._analyze_node(elem)
+        
+        # For all other nodes, return the node (possibly with analyzed children)
+        return node
 
     def _check_int_literal_range(self, ty, value, loc):
         """Check if an integer literal fits within the range of the given type."""

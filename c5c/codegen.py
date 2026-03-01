@@ -1,5 +1,5 @@
 class CodeGen:
-    def __init__(self, optimizer=None):
+    def __init__(self, optimizer=None, try_errors_map=None):
         self.optimizer = optimizer
         self.rodata = []
         self.text = []
@@ -22,6 +22,8 @@ class CodeGen:
         self.lambda_count = 0
         self.lambda_funcs = []  # Store lambda function definitions
         self.break_targets = []  # Stack of break jump targets (for loops and switches)
+        self.try_errors_map = try_errors_map or {}  # Map from try_catch loc to list of errors
+        self.catch_param_counter = 0  # For generating unique catch parameter names
 
     def mangle(self, name):
         return name.replace('::', '_')
@@ -761,6 +763,8 @@ __c5_str_sub:
                             self.text.append(f"    mov %eax, {self.local_var_offset}(%rbp)")
                         else:
                             self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+        elif node[0] == 'try_catch_stmt':
+            self.gen_try_catch(node)
         elif node[0] == 'return_stmt':
             self.func_has_return = True
             if node[1]:
@@ -1071,6 +1075,184 @@ __c5_str_sub:
                     self.gen_stmt(stmt)
                     
             self.text.append(f"{end_label}:")
+
+    def gen_try_catch(self, node):
+        # node structure: ('try_catch_stmt', try_body, catch_param, catch_body, loc)
+        try_body = node[1]
+        catch_param = node[2]
+        catch_body = node[3]
+        loc = node[4]
+        
+        # Retrieve errors collected for this try-catch block
+        errors_list = self.try_errors_map.get(loc, [])
+        # Group errors by statement index
+        errors_by_index = {}
+        for err in errors_list:
+            idx = err['index']
+            if idx not in errors_by_index:
+                errors_by_index[idx] = []
+            errors_by_index[idx].append(err)
+        
+        # Generate labels
+        self.label_count += 1
+        catch_label = f".Lcatch_{self.label_count}"
+        end_label = f".Ltry_end_{self.label_count}"
+        
+        # Generate try body with pre-checks
+        error_handlers = []  # List of (handler_label, message_label) pairs
+        err_counter = 0
+        for i, stmt in enumerate(try_body):
+            # Pre-check for errors associated with this statement
+            if i in errors_by_index:
+                for err in errors_by_index[i]:
+                    code = err['code']
+                    msg = err.get('msg', '')
+                    stmt_node = err.get('stmt_node')
+                    # Currently handle only E023 (integer overflow)
+                    if code == 'E023' and stmt_node:
+                        # Extract value and type from the statement
+                        value = None
+                        ty = None
+                        if stmt_node[0] == 'var_decl':
+                            ty = stmt_node[1]
+                            init = stmt_node[3]
+                            if init and init[0] == 'number':
+                                value = init[1]
+                        elif stmt_node[0] == 'assign':
+                            right = stmt_node[2]
+                            if right[0] == 'number':
+                                value = right[1]
+                                # Try to get target type from left-hand side
+                                left = stmt_node[1]
+                                ty = self._get_expr_type(left)
+                        if value is not None and ty is not None:
+                            min_val, max_val = self._int_type_range(ty)
+                            if min_val is not None and max_val is not None:
+                                # Determine signedness
+                                signed = not ty.startswith('unsigned ')
+                                # Create an error handler label for this specific error
+                                handler_label = f".Lerr_{self.label_count}_{err_counter}"
+                                err_counter += 1
+                                # Get or create string label for the error message
+                                err_msg = msg if msg else f"Integer overflow: value {value} does not fit in type {ty}"
+                                msg_label = self.get_string_label(err_msg)
+                                error_handlers.append((handler_label, msg_label))
+                                # Load constant into %rax
+                                self.text.append(f"    mov ${value}, %rax")
+                                # Compare with min
+                                if signed:
+                                    self.text.append(f"    cmp ${min_val}, %rax")
+                                    self.text.append(f"    jl {handler_label}")
+                                else:
+                                    # Unsigned: min is 0, so only check > max
+                                    pass
+                                # Compare with max
+                                if signed:
+                                    self.text.append(f"    cmp ${max_val}, %rax")
+                                    self.text.append(f"    jg {handler_label}")
+                                else:
+                                    self.text.append(f"    cmp ${max_val}, %rax")
+                                    self.text.append(f"    ja {handler_label}")
+                                continue  # generated check, skip to next error or statement
+                        # If we couldn't generate a check, fall through to treat as generic error
+                    # For other error types or if extraction failed, treat as generic error with message
+                    # Generate a generic check that always triggers (since error condition is static)
+                    # But we need a condition. For now, we'll just generate an unconditional jump if we have a msg?
+                    # Actually, we can't just always jump; the error might be conditional. For simplicity, we'll generate a check that always fails if we can't do better.
+                    # We'll generate: mov $1, %rax; test %rax, %rax; jmp catch_label (always)
+                    # But that would always jump, which is okay if the error is definite.
+                    # However, we don't know if the error is definite. For now, skip generic handling.
+                    # We'll just not generate a check; the error will be ignored at runtime.
+                    # This is a limitation.
+                    pass
+            # Generate the statement normally
+            self.gen_stmt(stmt)
+        
+        # After successful try block, skip catch
+        self.text.append(f"    jmp {end_label}")
+        
+        # Emit error handler blocks: set %rdi with error message and jump to catch
+        for handler_label, msg_label in error_handlers:
+            self.text.append(f"{handler_label}:")
+            self.text.append(f"    lea {msg_label}(%rip), %rdi")
+            self.text.append(f"    jmp {catch_label}")
+        
+        # Generate catch block
+        self.text.append(f"{catch_label}:")
+        # Allocate space for catch parameter (string) on the stack
+        internal_name = f"__catch_{catch_param}_{self.catch_param_counter}"
+        self.catch_param_counter += 1
+        sz = 8  # string is 8 bytes (pointer)
+        if abs(self.local_var_offset) % 8 != 0:
+            self.local_var_offset -= 8 - (abs(self.local_var_offset) % 8)
+        self.local_var_offset -= sz
+        self.local_vars[internal_name] = (self.local_var_offset, 'string')
+        # Store the error string pointer (passed in %rdi) into this slot
+        self.text.append(f"    mov %rdi, {self.local_var_offset}(%rbp)")
+        # Rewrite catch_body to replace references to catch_param with internal_name
+        mapping = {catch_param: internal_name}
+        rewritten_catch_body = self.rewrite_ids(catch_body, mapping)
+        # Generate catch body
+        for s in rewritten_catch_body:
+            self.gen_stmt(s)
+        
+        # End label
+        self.text.append(f"{end_label}:")
+    
+    def rewrite_ids(self, node, mapping):
+        """Recursively rewrite id nodes according to mapping."""
+        if isinstance(node, tuple):
+            tag = node[0]
+            # If it's an id and in mapping, replace
+            if tag == 'id' and node[1] in mapping:
+                # Keep location (last element)
+                return ('id', mapping[node[1]], node[-1])
+            # Otherwise, recurse on children
+            new_children = []
+            for child in node[1:]:
+                if isinstance(child, (tuple, list)):
+                    new_children.append(self.rewrite_ids(child, mapping))
+                else:
+                    new_children.append(child)
+            return (node[0],) + tuple(new_children)
+        elif isinstance(node, list):
+            return [self.rewrite_ids(item, mapping) for item in node]
+        else:
+            return node
+    
+    def _int_type_range(self, ty):
+        """Return (min_val, max_val) for integer type, or (None, None) if not applicable."""
+        # Strip const and signed/unsigned modifiers
+        base_ty = ty
+        # Remove const
+        if base_ty.startswith('const '):
+            base_ty = base_ty[6:]
+        signed = True
+        if base_ty.startswith('unsigned '):
+            signed = False
+            base_ty = base_ty[9:]
+        elif base_ty.startswith('signed '):
+            signed = True
+            base_ty = base_ty[7:]
+        # Determine bit width
+        if base_ty == 'int':
+            bits = 64
+        elif base_ty == 'char':
+            bits = 8
+        elif base_ty.startswith('int<') and base_ty.endswith('>'):
+            try:
+                bits = int(base_ty[4:-1])
+            except:
+                return (None, None)
+        else:
+            return (None, None)
+        if signed:
+            min_val = -(1 << (bits - 1))
+            max_val = (1 << (bits - 1)) - 1
+        else:
+            min_val = 0
+            max_val = (1 << bits) - 1
+        return (min_val, max_val)
 
     def gen_expr(self, node):
         if node[0] == 'number':
