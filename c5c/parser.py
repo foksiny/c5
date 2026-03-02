@@ -2,6 +2,8 @@ class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.pos = 0
+        # Track known type names for disambiguation (built-in + user-defined)
+        self.type_names = {'int', 'char', 'float', 'string', 'void'}
 
     def peek(self):
         return self.tokens[self.pos]
@@ -69,6 +71,7 @@ class Parser:
         loc = self._loc()
         self.consume('STRUCT')
         name = self.consume('ID').value
+        self.type_names.add(name)  # Register struct name as a known type
         self.consume('LBRACE')
         fields = []
         while self.peek().type != 'RBRACE':
@@ -84,6 +87,7 @@ class Parser:
         loc = self._loc()
         self.consume('ENUM')
         name = self.consume('ID').value
+        self.type_names.add(name)  # Register enum name as a known type
         self.consume('LBRACE')
         variants = []
         if self.peek().type != 'RBRACE':
@@ -101,6 +105,7 @@ class Parser:
         loc = self._loc()
         self.consume('TYPE')
         name = self.consume('ID').value
+        self.type_names.add(name)  # Register typedef name as a known type
         self.consume('LBRACE')
         types = []
         if self.peek().type != 'RBRACE':
@@ -175,7 +180,36 @@ class Parser:
             look += 1
         # If next is an ID, it's a declaration
         return look < len(self.tokens) and self.tokens[look].type == 'ID'
-
+    
+    def _can_start_unary(self, token):
+        """Check if a token can start a unary expression (operand of a cast)."""
+        if token is None:
+            return False
+        return token.type in ('BANG', 'TILDE', 'MUL', 'AMP', 'PLUS', 'MINUS',
+                              'LPAREN', 'FLOAT', 'NUMBER', 'CHAR', 'STRING',
+                              'FNCT', 'ID', 'LBRACE')
+    
+    def _is_valid_type_for_cast(self, ty_str):
+        """Determine if a parsed type string is valid as a cast target."""
+        # If it contains '<', '::', or ends with '*', it's clearly a type syntax
+        if '<' in ty_str or '::' in ty_str or ty_str.endswith('*'):
+            return True
+        # Strip modifiers (const, signed, unsigned)
+        candidate = ty_str
+        while candidate.startswith('const ') or candidate.startswith('signed ') or candidate.startswith('unsigned '):
+            if candidate.startswith('const '):
+                candidate = candidate[6:]
+            elif candidate.startswith('signed '):
+                candidate = candidate[7:]
+            else:
+                candidate = candidate[9:]
+        # Check if candidate is a built-in type or a known user-defined type
+        if candidate in ('int', 'char', 'float', 'string', 'void'):
+            return True
+        if candidate in self.type_names:
+            return True
+        return False
+    
     def parse_include(self):
         self.consume('INCLUDE')
         self.consume('LT')
@@ -505,32 +539,108 @@ class Parser:
 
     def parse_expr(self):
         loc = self._loc()
-        left = self.parse_comparison()
+        left = self.parse_logical_or()
         if self.peek().type == 'ASSIGN':
             self.consume('ASSIGN')
             right = self.parse_expr()
             return ('assign', left, right, loc)
         return left
 
-    def parse_comparison(self):
+    def parse_logical_or(self):
+        loc = self._loc()
+        left = self.parse_logical_and()
+        while self.peek().type == 'LOR':
+            self.consume('LOR')
+            right = self.parse_logical_and()
+            left = ('binop', '||', left, right, loc)
+        return left
+
+    def parse_logical_and(self):
+        loc = self._loc()
+        left = self.parse_bitwise_or()
+        while self.peek().type == 'LAND':
+            self.consume('LAND')
+            right = self.parse_bitwise_or()
+            left = ('binop', '&&', left, right, loc)
+        return left
+
+    def parse_bitwise_or(self):
+        loc = self._loc()
+        left = self.parse_bitwise_xor()
+        while self.peek().type == 'BOR':
+            self.consume('BOR')
+            right = self.parse_bitwise_xor()
+            left = ('binop', '|', left, right, loc)
+        return left
+
+    def parse_bitwise_xor(self):
+        loc = self._loc()
+        left = self.parse_bitwise_and()
+        while self.peek().type == 'BXOR':
+            self.consume('BXOR')
+            right = self.parse_bitwise_and()
+            left = ('binop', '^', left, right, loc)
+        return left
+
+    def parse_bitwise_and(self):
+        loc = self._loc()
+        left = self.parse_equality()
+        while self.peek().type == 'AMP':
+            self.consume('AMP')
+            right = self.parse_equality()
+            left = ('binop', '&', left, right, loc)
+        return left
+
+    def parse_equality(self):
+        loc = self._loc()
+        left = self.parse_relational()
+        while self.peek().type in ('EQ', 'NEQ'):
+            op = self.consume().value
+            right = self.parse_relational()
+            left = ('binop', op, left, right, loc)
+        return left
+
+    def parse_relational(self):
+        loc = self._loc()
+        left = self.parse_shift()
+        while self.peek().type in ('GT', 'LT', 'LEQ', 'GEQ'):
+            op = self.consume().value
+            right = self.parse_shift()
+            left = ('binop', op, left, right, loc)
+        return left
+
+    def parse_shift(self):
         loc = self._loc()
         left = self.parse_arithmetic()
-        while self.peek().type in ('GT', 'LT', 'EQ', 'NEQ', 'LEQ', 'GEQ'):
-            op = self.consume().value
-            right = self.parse_arithmetic()
-            left = ('binop', op, left, right, loc)
+        while True:
+            if self.peek().type == 'LSHIFT':
+                op = self.consume().value
+                right = self.parse_arithmetic()
+                left = ('binop', op, left, right, loc)
+            elif self.peek().type == 'GT':
+                # Check for two consecutive '>' to form right shift
+                if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == 'GT':
+                    self.consume('GT')
+                    self.consume('GT')
+                    op = '>>'
+                    right = self.parse_arithmetic()
+                    left = ('binop', op, left, right, loc)
+                else:
+                    break
+            else:
+                break
         return left
 
     def parse_arithmetic(self):
         loc = self._loc()
-        left = self.parse_factor()
+        left = self.parse_multiplicative()
         while self.peek().type in ('PLUS', 'MINUS'):
             op = self.consume().value
-            right = self.parse_factor()
+            right = self.parse_multiplicative()
             left = ('binop', op, left, right, loc)
         return left
 
-    def parse_factor(self):
+    def parse_multiplicative(self):
         loc = self._loc()
         left = self.parse_unary()
         while self.peek().type in ('MUL', 'DIV', 'MOD'):
@@ -541,7 +651,31 @@ class Parser:
 
     def parse_unary(self):
         loc = self._loc()
-        if self.peek().type in ('MUL', 'AMP', 'PLUS', 'MINUS'):
+        # Check for cast: (type) unary_expression
+        if self.peek().type == 'LPAREN':
+            saved_pos = self.pos
+            self.consume('LPAREN')
+            try:
+                ty = self.parse_type()
+                if self.peek().type == 'RPAREN':
+                    # Validate that this looks like a type for casting
+                    if self._is_valid_type_for_cast(ty):
+                        # Check the token after RPAREN to see if it can start a unary expression
+                        # Peek ahead without consuming
+                        if self.pos + 1 < len(self.tokens):
+                            next_tok = self.tokens[self.pos + 1]
+                        else:
+                            next_tok = None
+                        if next_tok and self._can_start_unary(next_tok):
+                            self.consume('RPAREN')
+                            operand = self.parse_unary()
+                            return ('cast', ty, operand, loc)
+            except SyntaxError:
+                pass
+            # Not a cast, rollback to before '('
+            self.pos = saved_pos
+        # Handle unary operators
+        if self.peek().type in ('BANG', 'TILDE', 'MUL', 'AMP', 'PLUS', 'MINUS'):
             op = self.consume().value
             target = self.parse_unary()
             return ('unary', op, target, loc)

@@ -1,0 +1,28 @@
+include <std.c5h>
+
+struct Result {
+    string name;
+    int<32> val;
+};
+
+void main() {
+    int<32> a = 1;
+    int<32> b = 2;
+
+    array<Result> results;
+
+    results.push({"band", a & b});
+    results.push({"bor",  a | b});
+    results.push({"xor",  a ^ b});
+    results.push({"bnot", ~a});
+    results.push({"shl",  a << b});
+    results.push({"shr",  a >> b});
+
+    results.push({"land", (1 && 1)});
+    results.push({"lor",  (0 || 1)});
+    results.push({"lnot", (!a == 0)});
+
+    foreach (i, res in results) {
+        std::printf("%s: %d\n", res.name, res.val);
+    }
+}

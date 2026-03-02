@@ -170,6 +170,9 @@ class SemanticAnalyzer:
                     if ty.startswith('const '):
                         ty = ty[6:]  # Remove "const " prefix
                     return ty
+        if tag == 'cast':
+            # ('cast', target_type, operand, loc)
+            return node[1]  # The target type of the cast
         if tag == 'binop':
             op = node[1]
             left_ty = self._get_type(node[2])
@@ -185,8 +188,24 @@ class SemanticAnalyzer:
             elif right_ty.endswith('*'):
                 if left_ty == 'int' and op == '+': return right_ty
             
-            # Preserve signed/unsigned in binary operations
-            # If either operand is unsigned, result is unsigned
+            # Float promotion: if either operand is float, result is the wider float type
+            if left_ty.startswith('float') or right_ty.startswith('float'):
+                def float_width(ty):
+                    if ty in ('float', 'float<64>'): return 64
+                    if ty == 'float<32>': return 32
+                    return 0
+                lw = float_width(left_ty) if left_ty.startswith('float') else 0
+                rw = float_width(right_ty) if right_ty.startswith('float') else 0
+                max_w = max(lw, rw)
+                if max_w == 64:
+                    return 'float<64>'
+                elif max_w == 32:
+                    return 'float<32>'
+                else:
+                    # Fallback to the float operand's type
+                    return left_ty if left_ty.startswith('float') else right_ty
+            
+            # Preserve signed/unsigned in binary operations (integer only)
             left_is_unsigned = left_ty.startswith('unsigned ')
             right_is_unsigned = right_ty.startswith('unsigned ')
             if left_is_unsigned or right_is_unsigned:
@@ -198,13 +217,19 @@ class SemanticAnalyzer:
                     return left_ty
                 else:
                     return f"unsigned {base_left}"
-                
+            
+            # Logical operators return int
+            if op in ('&&', '||'):
+                return 'int'
+            
             return left_ty
         if tag == 'unary':
             op = node[1]
             sub_ty = self._get_type(node[2])
             if op == '&': return sub_ty + '*'
             if op == '*': return sub_ty[:-1] if sub_ty.endswith('*') else 'unknown'
+            if op == '~': return sub_ty
+            if op == '!': return 'int'
             return sub_ty
         if tag == 'namespace_access':
             name = f"{node[1]}::{node[2]}"
@@ -282,6 +307,24 @@ class SemanticAnalyzer:
         if ty.startswith('const '):
             ty = ty[6:]
         return ty in ('float', 'float<32>', 'float<64>')
+
+    def _get_integer_bits(self, ty):
+        """Get the bit width of an integer type, or None if not an integer."""
+        # Strip const and signed/unsigned modifiers
+        if ty.startswith('const '):
+            ty = ty[6:]
+        if ty.startswith('unsigned ') or ty.startswith('signed '):
+            ty = ty.split(' ', 1)[1]
+        if ty == 'int':
+            return 64
+        if ty == 'char':
+            return 8
+        if ty.startswith('int<') and ty.endswith('>'):
+            try:
+                return int(ty[4:-1])
+            except:
+                return None
+        return None
 
     def _normalize_type(self, ty):
         """Normalize type aliases to canonical forms."""
@@ -520,12 +563,39 @@ class SemanticAnalyzer:
             self._analyze_node(right)
             if op == '/' and right[0] == 'number' and str(right[1]) == '0': self.add_error("E004", loc=loc)
             ty_l = self._get_type(left)
+            ty_r = self._get_type(right)
             if ty_l == 'string' and op not in ('+', '-'): self.add_error("E017", op, loc)
             if op in ('+', '-') and right[0] == 'number' and str(right[1]) == '0': self.add_warning("W004", loc=loc)
+            # Type checking for bitwise and logical operators
+            if op in ('&', '|', '^', '<<', '>>', '&&', '||'):
+                if not self._is_integer_type(ty_l) or not self._is_integer_type(ty_r):
+                    self.add_error("E002", f"Operator '{op}' requires integer operands", loc)
+            # Shift count validation for constant right operand
+            if op in ('<<', '>>') and right[0] == 'number' and isinstance(right[1], int):
+                shift = right[1]
+                if shift < 0:
+                    self.add_error("E002", f"Shift count {shift} is negative", loc)
+                else:
+                    # Determine bit width of left type
+                    bits = self._get_integer_bits(ty_l)
+                    if bits is not None and shift >= bits:
+                        self.add_error("E002", f"Shift count {shift} >= type width {bits}", loc)
 
         elif tag == 'unary':
-            self._analyze_node(node[2])
-
+            op = node[1]
+            target = node[2]
+            self._analyze_node(target)
+            ty = self._get_type(target)
+            if op in ('~', '!'):
+                if not self._is_integer_type(ty):
+                    self.add_error("E002", f"Operator '{op}' requires integer operand", loc)
+        
+        elif tag == 'cast':
+            # ('cast', target_type, operand, loc)
+            target_type, operand = node[1], node[2]
+            self._analyze_node(operand)
+            # No type compatibility check; cast explicitly converts any type to any type
+        
         elif tag == 'call':
             target = node[1]
             args = node[2]

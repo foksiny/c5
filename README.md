@@ -655,6 +655,155 @@ void main() {
 
 ---
 
+### 17. Operators
+
+C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, and comparison operations. All operators follow C-like precedence and associativity.
+
+#### Arithmetic Operators
+- `+` (addition)
+- `-` (subtraction)
+- `*` (multiplication)
+- `/` (integer division)
+- `%` (modulo)
+
+#### Bitwise Operators
+- `&` (bitwise AND)
+- `|` (bitwise OR)
+- `^` (bitwise XOR)
+- `~` (bitwise NOT, unary)
+- `<<` (left shift)
+- `>>` (right shift, sign-extended for signed types, zero-extended for unsigned)
+
+#### Logical Operators
+- `&&` (logical AND, short-circuit)
+- `||` (logical OR, short-circuit)
+- `!` (logical NOT, unary)
+
+#### Comparison Operators
+- `==` (equal)
+- `!=` (not equal)
+- `<` (less than)
+- `>` (greater than)
+- `<=` (less than or equal)
+- `>=` (greater than or equal)
+
+#### Other Operators
+- `=` (assignment)
+- `&` (address-of, unary)
+- `*` (dereference, unary)
+- `+` (unary plus)
+- `-` (unary minus)
+
+**Operator Precedence** (from highest to lowest):
+
+1. Unary (`!`, `~`, `+`, `-`, `*`, `&`)
+2. Multiplicative (`*`, `/`, `%`)
+3. Additive (`+`, `-`)
+4. Shift (`<<`, `>>`)
+5. Relational (`<`, `>`, `<=`, `>=`)
+6. Equality (`==`, `!=`)
+7. Bitwise AND (`&`)
+8. Bitwise XOR (`^`)
+9. Bitwise OR (`|`)
+10. Logical AND (`&&`)
+11. Logical OR (`||`)
+12. Assignment (`=`)
+
+**Notes:**
+- Logical operators `&&` and `||` perform short-circuit evaluation.
+- Bitwise shift operators use the lower 5 bits of the right operand (mod 32 for 32-bit types, mod 64 for 64-bit) for the shift count.
+- The `~` operator performs bitwise complement.
+- The `!` operator returns `1` for non-zero values and `0` for zero.
+
+#### Example
+
+```c
+include <std.c5h>
+
+void main() {
+    int<32> a = 5;
+    int<32> b = 3;
+    int<32> c = a & b;      // Bitwise AND: 5 & 3 = 1
+    int<32> d = a | b;      // Bitwise OR: 5 | 3 = 7
+    int<32> e = a ^ b;      // Bitwise XOR: 5 ^ 3 = 6
+    int<32> f = a << 2;     // Left shift: 5 << 2 = 20
+    int<32> g = ~a;         // Bitwise NOT: ~5 = -6 (two's complement)
+    
+    bool cond1 = (a > 0) && (b > 0);  // Logical AND: true
+    bool cond2 = (a == 0) || (b == 0); // Logical OR: false
+    bool cond3 = !a;                   // Logical NOT: false
+    
+    std::printf("%d %d %d %d %d | %d %d %d\\n", c, d, e, f, g, cond1, cond2, cond3);
+}
+```
+
+```
+
+### 18. Type Conversions (Casts)
+
+C5 supports explicit type conversions (casts) using the syntax `(target_type) expression`. Casts allow you to convert a value from one type to another, overriding the compiler's default type checking.
+
+#### Syntax
+
+```c
+(target_type) expression
+```
+
+The `target_type` must be a valid type name (built-in or user-defined). The expression is evaluated and converted to the specified type.
+
+#### Supported Conversions
+
+C5 supports a wide range of type conversions:
+
+- **Numeric conversions**: Between integer types (`int`, `char`, `int<N>`) and floating-point types (`float`, `float<32>`, `float<64>`). Implicit conversions follow standard rules (sign-extension, zero-extension, truncation, floating-point rounding).
+- **Integer to integer**: Converting between different integer sizes preserves the numeric value when possible; narrowing conversions may truncate.
+- **Float to integer**: Truncates toward zero (e.g., `3.7` becomes `3`). Out-of-range values yield implementation-defined results.
+- **Integer to float**: Rounds to the nearest representable floating-point value.
+- **Float to float**: Converts between `float<32>` and `float<64>` with appropriate precision changes.
+- **Character and string conversions**:
+  - `char` to `string`: Creates a new string containing the single character.
+  - `string` (or `char*`) to `char`: Extracts the first character of the string.
+- **Pointer and integer conversions**: Pointers (e.g., `int*`) and integer types can be cast to each other. The pointer size is 8 bytes; integer values are extended or truncated as needed.
+
+Casts to and from user-defined types (structs, enums, union types) are also allowed, but the semantics may be limited. For structs, the cast is treated as a reinterpretation of the underlying bits (similar to `memcpy`), but the size must match.
+
+#### Examples
+
+```c
+include <std.c5h>
+
+void main() {
+    // Integer to float
+    float<32> a = (float<32>)3 / 2;   // 3 is converted to float<32> before division
+    
+    // Char to string
+    string b = (string)'a';           // creates string "a"
+    
+    // String to char
+    char c = (char)b;                 // takes first character 'a'
+    
+    // Float to integer
+    int<32> d = (int<32>)a;           // truncates float to integer
+    
+    // Pointer to integer
+    int<32>* ptr = ...;
+    unsigned int<64> addr = (unsigned int<64>)ptr;
+    
+    // Integer to pointer
+    int<32>* ptr2 = (int<32>*)0x1234; // caution: only for low-level programming
+    
+    std::printf("%.2f\n%s\n%c\n%d\n", a, b, c, d);
+}
+```
+
+#### Notes
+
+- Casts can bypass type safety and may lead to undefined behavior if used incorrectly (e.g., casting a pointer to an integer of insufficient size).
+- The compiler will still perform some checks (e.g., ensuring the target type is known).
+- For narrowing conversions (e.g., `int<64>` to `int<8>`), the value is truncated according to the target type's signedness.
+
+---
+
 ## 📚 Library Creation
 
 C5 supports creating and using libraries through a combination of header files (`.c5h`) and implementation files (`.c5`).

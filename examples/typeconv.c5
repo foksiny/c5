@@ -1,0 +1,10 @@
+include <std.c5h>
+
+void main() {
+    float<32> a = (float<32>)3 / 2;
+    string    b = (string)'a';
+    char      c = (char)b;
+    int<32>   d = (int<32>)a;
+
+    std::printf("%.2f\n%s\n%c\n%d\n", a, b, c, d);
+}

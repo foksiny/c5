@@ -67,6 +67,34 @@ class CodeGen:
             return max_size
         return 8
 
+    # Helper methods for type properties
+    def _is_integer_type(self, ty):
+        """Check if a type is an integer type (int, char, or sized int)."""
+        if ty in ('int', 'char', 'int<8>', 'int<16>', 'int<32>', 'int<64>'):
+            return True
+        if ty.startswith('unsigned ') or ty.startswith('signed '):
+            base = ty.split(' ', 1)[1]
+            return base in ('int', 'char', 'int<8>', 'int<16>', 'int<32>', 'int<64>') or (base.startswith('int<') and base.endswith('>'))
+        if ty.startswith('int<') and ty.endswith('>'):
+            return True
+        return False
+
+    def _is_signed_type(self, ty):
+        """Determine if an integer type is signed."""
+        if ty in ('int', 'char', 'int<8>', 'int<16>', 'int<32>', 'int<64>'):
+            return True
+        if ty.startswith('signed '):
+            return True
+        if ty.startswith('unsigned '):
+            return False
+        if ty.startswith('int<'):
+            return True
+        return False
+
+    def _is_integer_like(self, ty):
+        """Check if type is integer or pointer (both can be held in 64-bit register)."""
+        return self._is_integer_type(ty) or ty.endswith('*')
+
     def array_elem_type(self, ty):
         if ty.startswith('array<') and ty.endswith('>'):
             return ty[6:-1]
@@ -1393,6 +1421,75 @@ __c5_str_sub:
             # Load lambda function address
             self.text.append(f"    lea {lambda_name}(%rip), %rax")
             return "fnptr"
+        elif node[0] == 'cast':
+            target_type = node[1]
+            operand = node[2]
+            src_ty = self.gen_expr(operand)  # generate operand code, get source type
+            dst_ty = target_type
+            if src_ty == dst_ty:
+                return src_ty
+            # Integer-like conversions (integer or pointer)
+            if self._is_integer_like(src_ty) and self._is_integer_like(dst_ty):
+                src_sz = self.sizeof(src_ty)
+                dst_sz = self.sizeof(dst_ty)
+                dst_signed = self._is_signed_type(dst_ty)
+                # Source value is in %rax (already 64-bit extended)
+                if dst_sz < 8:
+                    if dst_sz == 4:
+                        if dst_signed:
+                            self.text.append("    movslq %eax, %rax")
+                        else:
+                            self.text.append("    movl %eax, %eax")
+                    elif dst_sz == 2:
+                        if dst_signed:
+                            self.text.append("    movswq %ax, %rax")
+                        else:
+                            self.text.append("    movzwq %ax, %rax")
+                    elif dst_sz == 1:
+                        if dst_signed:
+                            self.text.append("    movsbq %al, %rax")
+                        else:
+                            self.text.append("    movzbq %al, %rax")
+                return dst_ty
+            # Float to float conversion
+            if src_ty.startswith('float') and dst_ty.startswith('float'):
+                if src_ty in ('float<64>', 'float') and dst_ty == 'float<32>':
+                    self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                elif src_ty == 'float<32>' and dst_ty in ('float<64>', 'float'):
+                    self.text.append("    cvtss2sd %xmm0, %xmm0")
+                return dst_ty
+            # Integer to float
+            if self._is_integer_like(src_ty) and dst_ty.startswith('float'):
+                if dst_ty == 'float<32>':
+                    self.text.append("    cvtsi2ss %rax, %xmm0")
+                else:
+                    self.text.append("    cvtsi2sd %rax, %xmm0")
+                return dst_ty
+            # Float to integer
+            if src_ty.startswith('float') and self._is_integer_like(dst_ty):
+                if src_ty == 'float<32>':
+                    self.text.append("    cvttss2si %xmm0, %rax")
+                else:
+                    self.text.append("    cvttsd2si %xmm0, %rax")
+                return dst_ty
+            # Char to string
+            if src_ty == 'char' and dst_ty in ('string', 'char*'):
+                # Allocate 2 bytes, store char and null terminator
+                self.text.append("    push %rax")
+                self.text.append("    mov $2, %rdi")
+                self.text.append("    call malloc@PLT")
+                self.text.append("    mov %rax, %r11")
+                self.text.append("    pop %rax")
+                self.text.append("    movb %al, (%r11)")
+                self.text.append("    movb $0, 1(%r11)")
+                self.text.append("    mov %r11, %rax")
+                return 'string'
+            # String to char
+            if src_ty in ('string', 'char*') and dst_ty == 'char':
+                self.text.append("    movzbq (%rax), %rax")
+                return 'char'
+            # If none of the above, unsupported
+            raise Exception(f"Unsupported cast from {src_ty} to {dst_ty}")
         elif node[0] == 'unary':
             op, target = node[1], node[2]
             if op == '&':
@@ -1407,7 +1504,6 @@ __c5_str_sub:
                     if inner_ty == 'float<32>': self.text.append("    movss (%rax), %xmm0")
                     else: self.text.append("    movsd (%rax), %xmm0")
                 else:
-                    # Check if type is unsigned for proper extension
                     is_unsigned = inner_ty.startswith('unsigned ')
                     if sz == 1:
                         if is_unsigned:
@@ -1437,6 +1533,16 @@ __c5_str_sub:
                 else:
                     self.text.append("    neg %rax")
                 return ty
+            elif op == '~':
+                ty = self.gen_expr(target)
+                self.text.append("    not %rax")
+                return ty
+            elif op == '!':
+                ty = self.gen_expr(target)
+                self.text.append("    test %rax, %rax")
+                self.text.append("    sete %al")
+                self.text.append("    movzbq %al, %rax")
+                return 'int'
             return "unknown"
         elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access'):
             addr, ty = self.get_lvalue(node)
@@ -1700,6 +1806,37 @@ __c5_str_sub:
             left = node[2]
             right = node[3]
             
+            # Short-circuit logical operators
+            if op in ('&&', '||'):
+                # Evaluate left first
+                self.gen_expr(left)  # result in %rax
+                self.text.append("    test %rax, %rax")
+                label_false = f".Lsc_false_{self.label_count}"
+                label_end = f".Lsc_end_{self.label_count}"
+                if op == '&&':
+                    self.text.append(f"    je {label_false}")
+                    # left is true, evaluate right
+                    self.gen_expr(right)
+                    # Convert to 0/1
+                    self.text.append("    test %rax, %rax")
+                    self.text.append("    setne %al")
+                    self.text.append("    movzbq %al, %rax")
+                    self.text.append(f"    jmp {label_end}")
+                    self.text.append(f"{label_false}:")
+                    self.text.append("    mov $0, %rax")
+                    self.text.append(f"{label_end}:")
+                else:  # '||'
+                    self.text.append(f"    jne {label_end}")
+                    # left is false, evaluate right
+                    self.gen_expr(right)
+                    self.text.append("    test %rax, %rax")
+                    self.text.append("    setne %al")
+                    self.text.append("    movzbq %al, %rax")
+                    self.text.append(f"{label_end}:")
+                self.label_count += 1
+                return 'int'
+            
+            # Standard binary operators (non short-circuit)
             ty_r = self.gen_expr(right)
             if ty_r.startswith('float'):
                 self.text.append("    sub $8, %rsp")
@@ -1740,46 +1877,121 @@ __c5_str_sub:
                     self.uses_str_sub = True
                     return "string"
             
-            if ty_l.startswith('float'):
-                if ty_l == 'float<32>':
-                    self.text.append("    movss (%rsp), %xmm1")
-                    self.text.append("    add $8, %rsp")
-                    if op == '+':
-                        self.text.append("    addss %xmm1, %xmm0")
-                    elif op == '-':
-                        self.text.append("    subss %xmm1, %xmm0")
+            if ty_l.startswith('float') or ty_r.startswith('float'):
+                # Determine the float precision to use: prefer 64-bit if any operand is 64-bit
+                use_64bit = False
+                if ty_l.startswith('float') and ty_l != 'float<32>':
+                    use_64bit = True
+                if ty_r.startswith('float') and ty_r != 'float<32>':
+                    use_64bit = True
+                
+                # Ensure left operand is in %xmm0 with correct precision
+                if ty_l.startswith('float'):
+                    if ty_l == 'float<32>' and use_64bit:
+                        # Convert 32-bit to 64-bit
+                        self.text.append("    cvtss2sd %xmm0, %xmm0")
                 else:
-                    self.text.append("    movsd (%rsp), %xmm1")
+                    # Left is integer, convert to float
+                    if use_64bit:
+                        self.text.append("    cvtsi2sd %rax, %xmm0")
+                    else:
+                        self.text.append("    cvtsi2ss %rax, %xmm0")
+                
+                # Load right operand into %xmm1, converting if necessary
+                if ty_r.startswith('float'):
+                    # Right operand is on stack as float
+                    if ty_r == 'float<32>':
+                        self.text.append("    movss (%rsp), %xmm1")
+                    else:
+                        self.text.append("    movsd (%rsp), %xmm1")
+                    if ty_r == 'float<32>' and use_64bit:
+                        self.text.append("    cvtss2sd %xmm1, %xmm1")
+                    # Clean up stack allocation for float
                     self.text.append("    add $8, %rsp")
-                    if op == '+':
+                else:
+                    # Right operand is integer on stack (pushed earlier)
+                    self.text.append("    pop %rax")  # get integer value into rax
+                    if use_64bit:
+                        self.text.append("    cvtsi2sd %rax, %xmm1")
+                    else:
+                        self.text.append("    cvtsi2ss %rax, %xmm1")
+                
+                # Perform the operation
+                if op == '+':
+                    if use_64bit:
                         self.text.append("    addsd %xmm1, %xmm0")
-                    elif op == '-':
+                    else:
+                        self.text.append("    addss %xmm1, %xmm0")
+                elif op == '-':
+                    if use_64bit:
                         self.text.append("    subsd %xmm1, %xmm0")
-                return ty_l
+                    else:
+                        self.text.append("    subss %xmm1, %xmm0")
+                elif op == '*':
+                    if use_64bit:
+                        self.text.append("    mulsd %xmm1, %xmm0")
+                    else:
+                        self.text.append("    mulss %xmm1, %xmm0")
+                elif op == '/':
+                    if use_64bit:
+                        self.text.append("    divsd %xmm1, %xmm0")
+                    else:
+                        self.text.append("    divss %xmm1, %xmm0")
+                elif op in ('==', '!=', '<', '>', '<=', '>='):
+                    # Compare floats
+                    if use_64bit:
+                        self.text.append("    ucomisd %xmm1, %xmm0")
+                    else:
+                        self.text.append("    ucomiss %xmm1, %xmm0")
+                    # Set result based on flags
+                    if op == '==':
+                        self.text.append("    sete %al")
+                    elif op == '!=':
+                        self.text.append("    setne %al")
+                    elif op == '<':
+                        self.text.append("    setb %al")    # below (CF=1)
+                    elif op == '>':
+                        self.text.append("    seta %al")    # above (CF=0 and ZF=0)
+                    elif op == '<=':
+                        self.text.append("    setbe %al")   # below or equal
+                    elif op == '>=':
+                        self.text.append("    setae %al")   # above or equal
+                    self.text.append("    movzbq %al, %rax")
+                    return 'int'
+                else:
+                    raise Exception(f"Unsupported operator {op} for floating-point types")
+                
+                # Return the appropriate float type
+                if use_64bit:
+                    # Return the 64-bit float type from the operands (prefer original 64-bit if any)
+                    if ty_l.startswith('float') and ty_l != 'float<32>':
+                        return ty_l
+                    else:
+                        return ty_r if ty_r.startswith('float') else 'float<64>'
+                else:
+                    # Return 32-bit float type
+                    if ty_l.startswith('float') and ty_l == 'float<32>':
+                        return ty_l
+                    else:
+                        return ty_r if ty_r.startswith('float') and ty_r == 'float<32>' else 'float<32>'
             else:
                 self.text.append("    pop %rcx") # rcx is the right operand (pushed earlier)
                 
                 # Apply scaling for pointer arithmetic
                 if ptr_scaling > 1:
                     if is_ptr_sub:
-                        # (ptr2 - ptr1) / scaling
-                        # RAX is ptr1 (left), RCX is ptr2 (right) 
-                        # Wait, gen_expr(right) then push rax -> RCX is right. gen_expr(left) -> RAX is left.
-                        # so op is RAX op RCX.
                         self.text.append(f"    sub %rcx, %rax")
                         self.text.append("    cqo")
                         self.text.append(f"    mov ${ptr_scaling}, %rcx")
                         self.text.append("    idiv %rcx")
                         return "int"
                     else:
-                        # ptr + (int * scaling) or (int * scaling) + ptr
                         if ty_l.endswith('*'):
-                            # RAX is ptr, RCX is int
                             self.text.append(f"    imul ${ptr_scaling}, %rcx")
                         else:
-                            # RAX is int, RCX is ptr
                             self.text.append(f"    imul ${ptr_scaling}, %rax")
 
+                # Arithmetic operators
                 if op == '+':
                     self.text.append("    add %rcx, %rax")
                 elif op == '-':
@@ -1792,7 +2004,8 @@ __c5_str_sub:
                 elif op == '%':
                     self.text.append("    cqo")
                     self.text.append("    idiv %rcx")
-                    self.text.append("    mov %rdx, %rax")  # Remainder is in RDX
+                    self.text.append("    mov %rdx, %rax")
+                # Comparison operators
                 elif op == '>':
                     self.text.append("    cmp %rcx, %rax")
                     self.text.append("    setg %al")
@@ -1817,6 +2030,21 @@ __c5_str_sub:
                     self.text.append("    cmp %rcx, %rax")
                     self.text.append("    setle %al")
                     self.text.append("    movzbq %al, %rax")
+                # Bitwise operators
+                elif op == '&':
+                    self.text.append("    and %rcx, %rax")
+                elif op == '|':
+                    self.text.append("    or %rcx, %rax")
+                elif op == '^':
+                    self.text.append("    xor %rcx, %rax")
+                # Shift operators
+                elif op == '<<':
+                    self.text.append("    shl %cl, %rax")
+                elif op == '>>':
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    shr %cl, %rax")
+                    else:
+                        self.text.append("    sar %cl, %rax")
                 return ty_l
         elif node[0] == 'call':
             target = node[1]

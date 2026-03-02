@@ -57,6 +57,13 @@ class Optimizer:
                         if op == '!=': return ('number', '1' if lval != rval else '0') + ast[4:]
                         if op == '>=': return ('number', '1' if lval >= rval else '0') + ast[4:]
                         if op == '<=': return ('number', '1' if lval <= rval else '0') + ast[4:]
+                        if op == '&': return ('number', str(lval & rval)) + ast[4:]
+                        if op == '|': return ('number', str(lval | rval)) + ast[4:]
+                        if op == '^': return ('number', str(lval ^ rval)) + ast[4:]
+                        if op == '<<': return ('number', str(lval << rval)) + ast[4:]
+                        if op == '>>': return ('number', str(lval >> rval)) + ast[4:]
+                        if op == '&&': return ('number', '1' if lval and rval else '0') + ast[4:]
+                        if op == '||': return ('number', '1' if lval or rval else '0') + ast[4:]
                     except Exception:
                         pass
                 
@@ -96,7 +103,8 @@ class Optimizer:
                         val = int(target[1])
                         if op == '-': return ('number', str(-val)) + ast[3:]
                         if op == '+': return target
-                        # Note: '!' not handled as it's not in provided grammar/lexer context explicitly
+                        if op == '~': return ('number', str(~val)) + ast[3:]
+                        if op == '!': return ('number', '1' if val != 0 else '0') + ast[3:]
                     except: pass
                 
                 return ('unary', op, target) + ast[3:]

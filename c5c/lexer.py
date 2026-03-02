@@ -41,12 +41,20 @@ def lex(code):
         ('DOT',       r'\.'),
         ('COLONCOLON',r'::'),
         ('COLON',     r':'),
+        ('LSHIFT',    r'<<'),     # Left shift
+        ('LAND',      r'&&'),     # Logical AND
+        ('LOR',       r'\|\|'),   # Logical OR
         ('EQ',        r'=='),
         ('NEQ',       r'!='),
         ('LEQ',       r'<='),
         ('GEQ',       r'>='),
         ('LT',        r'<'),
         ('GT',        r'>'),
+        ('RSHIFT',    r'>>'),     # Right shift (after GT to allow nested generics)
+        ('BANG',      r'!'),      # Logical NOT (must come after NEQ)
+        ('TILDE',    r'~'),      # Bitwise NOT
+        ('BOR',       r'\|'),     # Bitwise OR (must come after LOR)
+        ('BXOR',      r'\^'),     # Bitwise XOR
         ('LPAREN',    r'\('),
         ('RPAREN',    r'\)'),
         ('LBRACE',    r'\{'),
