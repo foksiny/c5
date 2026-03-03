@@ -141,6 +141,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
     new_ast = []
     library_funcs = set()  # Track functions from included headers
     library_vars = set()   # Track variables from included headers
+    lib_includes = []      # Collect library linking directives
     for node in ast:
         if node[0] == 'include':
             fname = node[1]
@@ -183,6 +184,19 @@ def compile_file(filepath, include_paths=None, is_library=False):
                         namespaced_ast.append(n)
                 else:
                     namespaced_ast.append(n)
+            # Filter out libinclude nodes from the included header and collect them
+            filtered_ast = []
+            for n in namespaced_ast:
+                if isinstance(n, tuple) and n[0] == 'libinclude':
+                    raw_path = n[1]
+                    libtype = n[2]
+                    base_dir = os.path.dirname(inc_path)
+                    resolved_path = os.path.normpath(os.path.join(base_dir, raw_path))
+                    lib_includes.append((resolved_path, libtype))
+                else:
+                    filtered_ast.append(n)
+            namespaced_ast = filtered_ast
+            
             # Collect library functions and variables from this include
             for n in namespaced_ast:
                 if isinstance(n, tuple):
@@ -191,6 +205,11 @@ def compile_file(filepath, include_paths=None, is_library=False):
                     elif n[0] == 'pub_var':
                         library_vars.add(n[2])
             new_ast.extend(namespaced_ast)
+        elif node[0] == 'libinclude':
+            raw_path = node[1]
+            libtype = node[2]
+            resolved_path = os.path.normpath(os.path.join(dir_path, raw_path))
+            lib_includes.append((resolved_path, libtype))
         else:
             new_ast.append(node)
     
@@ -199,7 +218,10 @@ def compile_file(filepath, include_paths=None, is_library=False):
     expanded_ast = _expand_macros(new_ast, macros)
     
     # Remove macro definitions from AST after expansion
-    final_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    pre_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    
+    # Libincludes already collected during include processing
+    final_ast = pre_ast
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
@@ -215,7 +237,8 @@ def compile_file(filepath, include_paths=None, is_library=False):
     optimized_ast = opt.optimize_ast(stripped_ast)
 
     cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
-    return cg.generate(optimized_ast)
+    asm = cg.generate(optimized_ast)
+    return asm, lib_includes
 
 
 def compile_files(filepaths, include_paths=None, is_library=False):
@@ -231,6 +254,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     primary_file = filepaths[0]
     library_funcs = set()  # Track functions from non-primary files
     library_vars = set()   # Track variables from library files (no dead code warnings)
+    lib_includes = []      # Collect library linking directives
     
     for filepath in filepaths:
         code = open(filepath).read()
@@ -288,6 +312,19 @@ def compile_files(filepaths, include_paths=None, is_library=False):
                             namespaced_ast.append(n)
                     else:
                         namespaced_ast.append(n)
+                # Filter out libinclude nodes from the included header and collect them
+                filtered_ast = []
+                for n in namespaced_ast:
+                    if isinstance(n, tuple) and n[0] == 'libinclude':
+                        raw_path = n[1]
+                        libtype = n[2]
+                        base_dir = os.path.dirname(inc_path)
+                        resolved_path = os.path.normpath(os.path.join(base_dir, raw_path))
+                        lib_includes.append((resolved_path, libtype))
+                    else:
+                        filtered_ast.append(n)
+                namespaced_ast = filtered_ast
+                
                 # Collect library functions and variables from this include
                 for n in namespaced_ast:
                     if isinstance(n, tuple):
@@ -296,13 +333,18 @@ def compile_files(filepaths, include_paths=None, is_library=False):
                         elif n[0] == 'pub_var':
                             library_vars.add(n[2])
                 combined_ast.extend(namespaced_ast)
+            elif node[0] == 'libinclude':
+                raw_path = node[1]
+                libtype = node[2]
+                resolved_path = os.path.normpath(os.path.join(dir_path, raw_path))
+                lib_includes.append((resolved_path, libtype))
             else:
                 # Track functions and variables from non-primary files
                 if not is_primary and isinstance(node, tuple):
                     if node[0] == 'func':
-                        library_funcs.add(node[2])  # node[2] is the function name
+                        library_funcs.add(node[2])
                     elif node[0] == 'pub_var':
-                        library_vars.add(node[2])  # node[2] is the variable name
+                        library_vars.add(node[2])
                 combined_ast.append(node)
     
     # Collect and expand macros
@@ -310,7 +352,10 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     expanded_ast = _expand_macros(combined_ast, macros)
     
     # Remove macro definitions from AST after expansion
-    final_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    pre_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    
+    # Libincludes already collected during include processing
+    final_ast = pre_ast
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
@@ -326,4 +371,5 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     optimized_ast = opt.optimize_ast(stripped_ast)
 
     cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
-    return cg.generate(optimized_ast)
+    asm = cg.generate(optimized_ast)
+    return asm, lib_includes

@@ -25,6 +25,8 @@ class Parser:
         while self.peek().type != 'EOF':
             if self.peek().type == 'INCLUDE':
                 decls.append(self.parse_include())
+            elif self.peek().type == 'LIBINCLUDE':
+                decls.append(self.parse_libinclude())
             elif self.peek().type == 'STRUCT':
                 decls.append(self.parse_struct_decl())
             elif self.peek().type == 'ENUM':
@@ -212,13 +214,29 @@ class Parser:
     
     def parse_include(self):
         self.consume('INCLUDE')
-        self.consume('LT')
-        fname = self.consume('ID').value
-        if self.peek().type == 'DOT':
-            self.consume('DOT')
-            fname += '.' + self.consume('ID').value
-        self.consume('GT')
+        fname = self.parse_angled_path()
         return ('include', fname)
+
+    def parse_angled_path(self):
+        """Parse a path inside <...> brackets, allowing slashes and dots."""
+        self.consume('LT')
+        parts = []
+        while self.peek().type != 'GT':
+            parts.append(self.consume().value)
+        self.consume('GT')
+        return ''.join(parts)
+
+    def parse_libinclude(self):
+        loc = self._loc()
+        self.consume('LIBINCLUDE')
+        path = self.parse_angled_path()
+        libtype = None
+        # Optional #static or #dynamic
+        if self.peek().type == 'HASH':
+            self.consume('HASH')
+            if self.peek().type == 'ID':
+                libtype = self.consume('ID').value
+        return ('libinclude', path, libtype, loc)
 
     def parse_type(self):
         # Handle signed/unsigned/const modifiers

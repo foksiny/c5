@@ -32,7 +32,98 @@ c5c --setup-libs
 
 # Compile and output only assembly
 c5c main.c5 -S -o output.s
+
+# Compile as a static library
+c5c mylib.c5 --lib static -o mylib
+
+# Compile as a dynamic/shared library
+c5c mylib.c5 --lib dynamic -o mylib
 ```
+
+## 📚 Library System
+
+C5 supports creating and linking libraries seamlessly. Libraries allow you to package reusable code and distribute it as pre-compiled binaries.
+
+### Creating a Library
+
+1. **Write your library code** in a `.c5` file with the functions you want to expose:
+
+```c5
+// mylib.c5
+int<32> add(int<32> a, int<32> b) {
+    return a + b;
+}
+
+int<32> multiply(int<32> a, int<32> b) {
+    return a * b;
+}
+```
+
+2. **Create a header file** (`.c5h`) that declares the library's public interface:
+
+```c5
+// mylib.c5h
+libinclude <mylib.a> #static
+
+int<32> add(int<32> a, int<32> b);
+int<32> multiply(int<32> a, int<32> b);
+```
+
+The `libinclude` directive tells the compiler which library file to link. The optional `#static` or `#dynamic` specifier indicates the library type (if omitted, the compiler infers from the file extension).
+
+3. **Compile the library**:
+
+```bash
+# Static library (.a)
+c5c mylib.c5 --lib static -o mylib
+
+# Dynamic/shared library (.so)
+c5c mylib.c5 --lib dynamic -o mylib
+```
+
+This produces `mylib.a` (static) or `mylib.so` (shared).
+
+### Using a Library
+
+In your application, simply include the header:
+
+```c5
+include <mylib.c5h>
+
+void main() {
+    int<32> result = add(10, 20);
+    std::printf("%d\n", result);
+}
+```
+
+Then compile normally:
+
+```bash
+c5c main.c5 -o myapp
+```
+
+The compiler automatically:
+- Finds the header file (using the standard include search paths)
+- Extracts the library path from `libinclude`
+- Links the library into your executable
+
+### Library Search Paths
+
+When resolving `libinclude` paths, the compiler searches relative to the header file's directory. You can also use:
+
+- **Relative paths**: `libinclude <../libs/mylib.a>`
+- **Absolute paths**: `libinclude </usr/local/lib/mylib.a>`
+
+### Distribution
+
+To distribute your library:
+1. Provide the header file (`.c5h`) for compilation
+2. Provide the compiled library (`.a` or `.so`)
+3. Users include the header and link against the library
+
+The `libinclude` directive in the header ensures the correct library is automatically linked.
+
+---
 
 ## 📂 Include Search Order
 When you use `include <file.c5h>`, the compiler searches in this order:
@@ -882,8 +973,8 @@ c5c main.c5 math.c5 utils.c5 -o myapp
 You can also compile library implementation files into object files (`.o`) for later linking:
 
 ```bash
-# Compile math.c5 to an object file (no main function required)
-c5c math.c5 --lib -o math.o
+# Compile math.c5 to an library file (no main function required)
+c5c math.c5 --lib dynamic/static -o math.o
 
 # Later, link with your main program
 gcc main.o math.o -o myapp

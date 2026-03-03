@@ -13,6 +13,7 @@ def lex(code):
     token_specification = [
         ('COMMENT',   r'//[^\n]*'),
         ('INCLUDE',   r'include\b'),
+        ('LIBINCLUDE',r'libinclude\b'),
         ('MACRO',     r'macro\b'),
         ('TYPE',      r'type\b'),
         ('VOID',      r'void\b'),
@@ -41,6 +42,7 @@ def lex(code):
         ('DOT',       r'\.'),
         ('COLONCOLON',r'::'),
         ('COLON',     r':'),
+        ('HASH',      r'#'),
         ('LSHIFT',    r'<<'),     # Left shift
         ('LAND',      r'&&'),     # Logical AND
         ('LOR',       r'\|\|'),   # Logical OR

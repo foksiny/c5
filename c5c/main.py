@@ -11,7 +11,7 @@ def main():
     parser.add_argument("-S", action="store_true", help="Output assembly only")
     parser.add_argument("-I", "--include", action="append", help="Add include search path")
     parser.add_argument("--setup-libs", action="store_true", help="Setup global C5 libraries")
-    parser.add_argument("--lib", action="store_true", help="Compile as library (output .o file)")
+    parser.add_argument("--lib", choices=['dynamic', 'static'], help="Compile as library. Use 'static' for static library (.a) or 'dynamic' for shared library (.so)")
     
     args = parser.parse_args()
 
@@ -50,9 +50,11 @@ def main():
     print(f"Compiling {', '.join(input_files)} to GAS assembly...")
     try:
         if len(input_files) == 1:
-            asm = compile_file(input_files[0], include_paths=args.include, is_library=args.lib)
+            result = compile_file(input_files[0], include_paths=args.include, is_library=(args.lib is not None))
         else:
-            asm = compile_files(input_files, include_paths=args.include, is_library=args.lib)
+            result = compile_files(input_files, include_paths=args.include, is_library=(args.lib is not None))
+        # result is (asm, lib_includes)
+        asm, lib_includes = result
     except Exception as e:
         print(f"Compilation error: {e}")
         sys.exit(1)
@@ -65,47 +67,89 @@ def main():
         return
 
     # Full compilation phase
-    if args.lib:
-        # Library mode: output a .o object file
-        final_out = args.output if args.output else base_name + ".o"
-        s_file = base_name + ".tmp.s"
-
-        with open(s_file, "w") as f:
-            f.write(asm)
-            
-        print(f"Assembling to object file...")
-        res = subprocess.run(["gcc", "-c", s_file, "-o", final_out])
-        if res.returncode != 0:
-            print("Error assembling")
-            if os.path.exists(s_file): os.remove(s_file)
-            sys.exit(res.returncode)
-            
-        if os.path.exists(s_file): os.remove(s_file)
-        print(f"Success! Library object file ready at: {final_out}")
+    # Write assembly to temporary file
+    s_file = base_name + ".tmp.s"
+    o_file = base_name + ".tmp.o"
+    
+    with open(s_file, "w") as f:
+        f.write(asm)
+    
+    # Determine if we're making a library and what type
+    is_lib = args.lib is not None
+    lib_type = args.lib if is_lib else None
+    
+    # Assemble to object file
+    if lib_type == 'dynamic':
+        print(f"Assembling to position-independent object file...")
+        res = subprocess.run(["gcc", "-c", "-fPIC", s_file, "-o", o_file])
     else:
-        # Executable mode
-        final_out = args.output if args.output else base_name
-        s_file = base_name + ".tmp.s"
-        o_file = base_name + ".tmp.o"
-
-        with open(s_file, "w") as f:
-            f.write(asm)
-            
         print(f"Assembling...")
         res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
-        if res.returncode != 0:
-            print("Error assembling")
+    
+    # Check for missing libraries early (before linking)
+    lib_paths = [path for path, _ in lib_includes]
+    for lib_path in lib_paths:
+        if not os.path.exists(lib_path):
+            print(f"Error: Library not found: {lib_path}")
             if os.path.exists(s_file): os.remove(s_file)
-            sys.exit(res.returncode)
-            
+            if os.path.exists(o_file): os.remove(o_file)
+            sys.exit(1)
+    
+    if res.returncode != 0:
+        print("Error assembling")
+        if os.path.exists(s_file): os.remove(s_file)
+        if os.path.exists(o_file): os.remove(o_file)
+        sys.exit(res.returncode)
+    
+    if is_lib:
+        # Library output
+        if lib_type == 'static':
+            extension = '.a'
+        else:
+            extension = '.so'
+        
+        if args.output:
+            final_out = args.output
+            if not final_out.endswith(extension):
+                final_out += extension
+        else:
+            final_out = base_name + extension
+        
+        if lib_type == 'static':
+            print(f"Creating static library...")
+            res = subprocess.run(["ar", "rcs", final_out, o_file])
+            if res.returncode != 0:
+                print("Error creating static library")
+                if os.path.exists(s_file): os.remove(s_file)
+                if os.path.exists(o_file): os.remove(o_file)
+                sys.exit(res.returncode)
+            print(f"Success! Static library ready at: {final_out}")
+        else:
+            # Shared library: link with dependencies
+            print(f"Creating shared library...")
+            cmd = ["gcc", "-shared", o_file] + lib_paths + ["-o", final_out]
+            res = subprocess.run(cmd)
+            if res.returncode != 0:
+                print("Error creating shared library")
+                if os.path.exists(s_file): os.remove(s_file)
+                if os.path.exists(o_file): os.remove(o_file)
+                sys.exit(res.returncode)
+            print(f"Success! Shared library ready at: {final_out}")
+        
+        # Clean up intermediate files
+        if os.path.exists(s_file): os.remove(s_file)
+        if os.path.exists(o_file): os.remove(o_file)
+    else:
+        # Executable mode: link with libraries
+        final_out = args.output if args.output else base_name
         print(f"Linking...")
-        res = subprocess.run(["gcc", o_file, "-o", final_out])
+        cmd = ["gcc", o_file] + lib_paths + ["-o", final_out]
+        res = subprocess.run(cmd)
         if res.returncode != 0:
             print("Error linking")
             if os.path.exists(s_file): os.remove(s_file)
             if os.path.exists(o_file): os.remove(o_file)
             sys.exit(res.returncode)
-            
         print("Cleaning up intermediate files...")
         if os.path.exists(s_file): os.remove(s_file)
         if os.path.exists(o_file): os.remove(o_file)
