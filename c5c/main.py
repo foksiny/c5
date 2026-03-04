@@ -28,8 +28,85 @@ def main():
         print(f"Installing libraries to {global_path}...")
         os.makedirs(global_path, exist_ok=True)
         import shutil
+        import tempfile
+        
+        # First, copy all non-.c5 files as-is (headers, etc.)
+        # But skip .a files that have a corresponding .c5 source (they'll be rebuilt)
         for f in os.listdir(local_path):
-            shutil.copy2(os.path.join(local_path, f), os.path.join(global_path, f))
+            src = os.path.join(local_path, f)
+            dst = os.path.join(global_path, f)
+            if os.path.isfile(src):
+                if f.endswith('.c5'):
+                    continue  # skip .c5 files, they'll be compiled
+                # Check if it's a .a file with a corresponding .c5 source
+                if f.endswith('.a'):
+                    base = os.path.splitext(f)[0]
+                    corresponding_c5 = f"{base}.c5"
+                    if corresponding_c5 in os.listdir(local_path):
+                        # Skip this .a, it will be rebuilt from .c5
+                        continue
+                # Copy other files directly (headers, standalone .a files)
+                shutil.copy2(src, dst)
+                print(f"Copied {f}")
+        
+        # Now compile all .c5 files to static libraries
+        c5_files = [f for f in os.listdir(local_path) if f.endswith('.c5')]
+        if c5_files:
+            print(f"Found {len(c5_files)} .c5 library file(s) to compile:")
+            for c5_file in c5_files:
+                print(f"  - {c5_file}")
+                
+            for c5_file in c5_files:
+                src_c5 = os.path.join(local_path, c5_file)
+                base_name = os.path.splitext(c5_file)[0]
+                
+                # Create temporary directory for build artifacts
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    s_file = os.path.join(tmpdir, f"{base_name}.s")
+                    o_file = os.path.join(tmpdir, f"{base_name}.o")
+                    a_file = os.path.join(global_path, f"{base_name}.a")
+                    
+                    try:
+                        # Compile .c5 to assembly (as a library)
+                        print(f"  Compiling {c5_file} to assembly...")
+                        asm, lib_includes = compile_file(src_c5, include_paths=args.include, is_library=True)
+                        
+                        # Write assembly to temp file
+                        with open(s_file, "w") as f:
+                            f.write(asm)
+                        
+                        # Assemble to object file
+                        print(f"  Assembling {base_name}.s to {base_name}.o...")
+                        res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
+                        if res.returncode != 0:
+                            print(f"  Error assembling {c5_file}")
+                            continue
+                        
+                        # Remove existing .a file if present to avoid adding to it
+                        if os.path.exists(a_file):
+                            os.remove(a_file)
+                        
+                        # Create static library
+                        print(f"  Creating static library {base_name}.a...")
+                        res = subprocess.run(["ar", "rcs", a_file, o_file])
+                        if res.returncode != 0:
+                            print(f"  Error creating static library for {c5_file}")
+                            continue
+                        
+                        # Also copy the .c5 source file to global path (if not already there)
+                        dst_c5 = os.path.join(global_path, c5_file)
+                        if src_c5 != dst_c5:
+                            shutil.copy2(src_c5, dst_c5)
+                            print(f"  Copied {c5_file} source")
+                        
+                        print(f"  Successfully built {base_name}.a")
+                        
+                    except Exception as e:
+                        print(f"  Error compiling {c5_file}: {e}")
+                        continue
+        else:
+            print("No .c5 files found in c5include to compile.")
+            
         print("Success!")
         sys.exit(0)
     

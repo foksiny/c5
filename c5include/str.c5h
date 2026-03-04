@@ -1,0 +1,9 @@
+libinclude <str.a> #static
+
+unsigned int<1> isdigit(string s);
+
+unsigned int<1> streq(string a, string b);
+
+string join_c(string s, char c);
+
+unsigned int<1> isalnum(string s);

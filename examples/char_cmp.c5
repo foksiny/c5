@@ -1,0 +1,24 @@
+include <std.c5h>
+
+unsigned int<1> isdigit(string s) {
+    array<char> nums = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    char c = '\0';
+    for (int i = 0; i < s.length(); i = i + 1) {
+        c = (char)s[i];
+        unsigned int<1> found = 0;
+        foreach (y, num in nums) {
+            if (c == num) {
+                found = 1;
+                break;
+            }
+        }
+        if (found == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+void main() {
+    std::printf("%d\n", isdigit("10"));
+}

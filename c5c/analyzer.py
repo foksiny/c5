@@ -26,6 +26,7 @@ class SemanticAnalyzer:
         self.current_try_stmt_index = -1  # Current statement index within the try body
         self.current_try_stmt_node = None  # Current statement node being analyzed
         self.try_errors_map = {}  # Map from try_catch node location to list of errors
+        self.ret_ty_stack = [] # Stack for tracking return types of nested functions/lambdas
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -182,6 +183,9 @@ class SemanticAnalyzer:
             right_node = node[3] if len(node) <= 4 or isinstance(node[3], tuple) else node[3]
             right_ty = self._get_type(right_node)
             
+            if op in ('==', '!=', '<', '>', '<=', '>='):
+                return 'int'
+
             if left_ty.endswith('*'):
                 if right_ty == 'int' and op in ('+', '-'): return left_ty
                 if right_ty.endswith('*') and op == '-': return 'int'
@@ -279,6 +283,23 @@ class SemanticAnalyzer:
                     if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
                     if base_ty.startswith('array<'): return 'void'
+            
+            if target[0] == 'id':
+                name = target[1]
+                # Check for local variables (function pointers/lambdas)
+                for scope in reversed(self.scopes):
+                    if name in scope:
+                        return scope[name]
+                # Check for global functions
+                if name in self.functions:
+                    return self.functions[name][0]
+            elif target[0] == 'namespace_access':
+                name = f"{target[1]}::{target[2]}"
+                if name in self.functions:
+                    return self.functions[name][0]
+                if name in self.scopes[0]:
+                    return self.scopes[0][name]
+            
             name = target[1] if target[0] == 'id' else f"{target[1]}::{target[2]}"
             # Handle built-in c_str() function
             if name == 'c_str':
@@ -484,7 +505,15 @@ class SemanticAnalyzer:
             self.scopes[-1][name] = ty
             self.var_locs[name] = loc  # Store variable location
             if init:
+                # For lambdas, store the expected return type for proper analysis
+                if init[0] == 'lambda':
+                    self.lambda_ret_type = ty
+                
                 self._analyze_node(init)
+                
+                if init[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
+                    delattr(self, 'lambda_ret_type')
+
                 if init[0] == 'init_list':
                     # Struct or array initializer
                     if ty in self.structs:
@@ -534,8 +563,18 @@ class SemanticAnalyzer:
         elif tag == 'assign':
             left, right = node[1], node[2]
             self._analyze_node(left)
+            l_ty = self._get_type(left)
+            
+            # For lambdas, store the expected return type for proper analysis
+            if right[0] == 'lambda':
+                self.lambda_ret_type = l_ty
+            
             self._analyze_node(right)
-            l_ty, r_ty = self._get_type(left), self._get_type(right)
+            
+            if right[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
+                delattr(self, 'lambda_ret_type')
+
+            r_ty = self._get_type(right)
             # Check integer literal range/type
             if right[0] == 'number' and isinstance(right[1], int):
                 self._check_int_literal_against_type(l_ty, right[1], loc)
@@ -629,6 +668,7 @@ class SemanticAnalyzer:
                 for a in args: self._analyze_node(a)
 
         elif tag == 'func':
+            self.ret_ty_stack.append(node[1])
             self.scopes.append(dict(self.scopes[0]))
             for pty, pname in node[3]: self.scopes[-1][pname] = pty
             for s in node[4]: self._analyze_node(s)
@@ -637,6 +677,7 @@ class SemanticAnalyzer:
                 if var not in self.used_vars and var not in self.functions and var not in self.library_vars:
                     var_loc = self.var_locs.get(var, loc)
                     self.add_warning("W001", var, var_loc)
+            self.ret_ty_stack.pop()
 
         elif tag == 'if_stmt':
             self._analyze_node(node[1])
@@ -708,6 +749,8 @@ class SemanticAnalyzer:
             elem_ty = 'int'  # default
             if array_ty.startswith('array<') and array_ty.endswith('>'):
                 elem_ty = array_ty[6:-1]
+            elif array_ty == 'string' or array_ty == 'char*':
+                elem_ty = 'char'
             
             # Add index and value variables to a new scope
             self.scopes.append({})
@@ -725,12 +768,29 @@ class SemanticAnalyzer:
             # Pop scope
             self.scopes.pop()
 
-        elif tag in ('expr_stmt', 'return_stmt'):
-            for child in node[1:]:
-                if isinstance(child, (tuple, list)):
-                    if isinstance(child, list):
-                        for i in child: self._analyze_node(i)
-                    else: self._analyze_node(child)
+        elif tag == 'expr_stmt':
+            self._analyze_node(node[1])
+
+        elif tag == 'return_stmt':
+            ret_expr = node[1]
+            curr_ret_ty = self.ret_ty_stack[-1] if self.ret_ty_stack else 'void'
+            if ret_expr:
+                self._analyze_node(ret_expr)
+                if curr_ret_ty == 'void':
+                    self.add_error("E013", loc=loc)
+                else:
+                    # Check literal compatibility
+                    if ret_expr[0] == 'number' and isinstance(ret_expr[1], int):
+                        self._check_int_literal_against_type(curr_ret_ty, ret_expr[1], loc)
+                    elif ret_expr[0] == 'float':
+                        self._check_float_literal_against_type(curr_ret_ty, ret_expr[1], loc)
+                    else:
+                        ret_ty = self._get_type(ret_expr)
+                        if not self._types_compatible(curr_ret_ty, ret_ty):
+                            self.add_error("E002", f"Function returns {curr_ret_ty} but got {ret_ty}", loc)
+            else:
+                if curr_ret_ty != 'void':
+                    self.add_error("E014", loc=loc)
         
         elif tag == 'while_stmt':
             # while (cond) body
@@ -742,8 +802,8 @@ class SemanticAnalyzer:
             
         elif tag == 'for_stmt':
             # for (init; cond; inc) body
-            self._analyze_node(node[1])  # init
             self.break_context.append('loop')
+            self._analyze_node(node[1])  # init
             self._analyze_node(node[2])  # condition
             self._analyze_node(node[3])  # increment
             for s in node[4]:  # body
@@ -869,6 +929,9 @@ class SemanticAnalyzer:
             
         elif tag == 'lambda':
             # Lambda expression: create a new scope for parameters and analyze body
+            # Use contextual return type if available, default to 'int'
+            lambda_ret_ty = getattr(self, 'lambda_ret_type', 'int')
+            self.ret_ty_stack.append(lambda_ret_ty)
             params, body = node[1], node[2]
             self.scopes.append({})
             for pty, pname in params:
@@ -877,6 +940,7 @@ class SemanticAnalyzer:
             for s in body:
                 self._analyze_node(s)
             self.scopes.pop()
+            self.ret_ty_stack.pop()
         
         elif tag == 'init_list':
             # Initializer list: analyze all elements

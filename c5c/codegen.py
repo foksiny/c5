@@ -449,6 +449,7 @@ class CodeGen:
     def _get_str_add_asm(self):
         return """
 .global __c5_str_add
+.weak __c5_str_add
 .type __c5_str_add, @function
 __c5_str_add:
     push %rbp
@@ -484,6 +485,7 @@ __c5_str_add:
     def _get_str_sub_asm(self):
         return """
 .global __c5_str_sub
+.weak __c5_str_sub
 .type __c5_str_sub, @function
 __c5_str_sub:
     push %rbp
@@ -929,6 +931,8 @@ __c5_str_sub:
             elem_ty = 'int'
             if array_ty.startswith('array<') and array_ty.endswith('>'):
                 elem_ty = array_ty[6:-1]
+            elif array_ty == 'string' or array_ty == 'char*':
+                elem_ty = 'char'
             elem_sz = self.sizeof(elem_ty)
             
             # Check if element type is a struct
@@ -936,26 +940,38 @@ __c5_str_sub:
             
             # Check if array_expr is a simple variable reference
             is_global_array = False
-            if array_expr[0] == 'id' and array_expr[1] in self.local_vars:
-                # Use the existing local array variable directly
-                array_off = self.local_vars[array_expr[1]][0]
-            elif array_expr[0] == 'id' and array_expr[1] in self.global_vars:
-                # Global array - load address into r12
-                is_global_array = True
-                array_name = array_expr[1]
-                self.text.append(f"    lea {array_name}(%rip), %r12")
-                array_off = None  # Not used for global arrays
+            is_string_type = array_ty == 'string' or array_ty == 'char*'
+            
+            if not is_string_type:
+                if array_expr[0] == 'id' and array_expr[1] in self.local_vars:
+                    # Use the existing local array variable directly
+                    array_off = self.local_vars[array_expr[1]][0]
+                elif array_expr[0] == 'id' and array_expr[1] in self.global_vars:
+                    # Global array - load address into r12
+                    is_global_array = True
+                    array_name = array_expr[1]
+                    self.text.append(f"    lea {array_name}(%rip), %r12")
+                    array_off = None  # Not used for global arrays
+                else:
+                    # Allocate the array variable if it's an expression
+                    # Store array in a local variable (ptr, len, cap)
+                    self.local_var_offset -= 24
+                    array_off = self.local_var_offset
+                    
+                    # Evaluate array expression and store it
+                    self.gen_expr(array_expr)
+                    self.text.append(f"    mov %rax, {array_off}(%rbp)")       # data ptr
+                    self.text.append(f"    mov %rdx, {array_off+8}(%rbp)")     # length
+                    self.text.append(f"    mov %rcx, {array_off+16}(%rbp)")    # capacity
             else:
-                # Allocate the array variable if it's an expression
-                # Store array in a local variable (ptr, len, cap)
-                self.local_var_offset -= 24
+                # For strings, normalize to a temp (ptr, len)
+                self.local_var_offset -= 16
                 array_off = self.local_var_offset
-                
-                # Evaluate array expression and store it
                 self.gen_expr(array_expr)
-                self.text.append(f"    mov %rax, {array_off}(%rbp)")       # data ptr
-                self.text.append(f"    mov %rdx, {array_off+8}(%rbp)")     # length
-                self.text.append(f"    mov %rcx, {array_off+16}(%rbp)")    # capacity
+                self.text.append(f"    mov %rax, {array_off}(%rbp)")
+                self.text.append("    mov %rax, %rdi")
+                self.text.append("    call strlen@PLT")
+                self.text.append(f"    mov %rax, {array_off+8}(%rbp)")
             
             # Helper to access array fields
             def arr_field(off):
@@ -2008,11 +2024,17 @@ __c5_str_sub:
                 # Comparison operators
                 elif op == '>':
                     self.text.append("    cmp %rcx, %rax")
-                    self.text.append("    setg %al")
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    seta %al")
+                    else:
+                        self.text.append("    setg %al")
                     self.text.append("    movzbq %al, %rax")
                 elif op == '<':
                     self.text.append("    cmp %rcx, %rax")
-                    self.text.append("    setl %al")
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    setb %al")
+                    else:
+                        self.text.append("    setl %al")
                     self.text.append("    movzbq %al, %rax")
                 elif op == '==':
                     self.text.append("    cmp %rcx, %rax")
@@ -2024,11 +2046,17 @@ __c5_str_sub:
                     self.text.append("    movzbq %al, %rax")
                 elif op == '>=':
                     self.text.append("    cmp %rcx, %rax")
-                    self.text.append("    setge %al")
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    setae %al")
+                    else:
+                        self.text.append("    setge %al")
                     self.text.append("    movzbq %al, %rax")
                 elif op == '<=':
                     self.text.append("    cmp %rcx, %rax")
-                    self.text.append("    setle %al")
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    setbe %al")
+                    else:
+                        self.text.append("    setle %al")
                     self.text.append("    movzbq %al, %rax")
                 # Bitwise operators
                 elif op == '&':
