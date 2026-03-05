@@ -1,0 +1,9 @@
+include <std.c5h>
+
+void main() {
+    string str = "hello, world!";
+
+    string str_r = str.replace("world", "everyone");
+
+    std::printf("str (original): %s\nstr (replaced 'world'): %s\n", str, str_r);
+}

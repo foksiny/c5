@@ -19,6 +19,7 @@ class CodeGen:
         self.data = []
         self.uses_str_add = False
         self.uses_str_sub = False
+        self.uses_str_replace = False
         self.lambda_count = 0
         self.lambda_funcs = []  # Store lambda function definitions
         self.break_targets = []  # Stack of break jump targets (for loops and switches)
@@ -184,6 +185,8 @@ class CodeGen:
                 if base_ty.startswith('array<') or base_ty == 'string' or base_ty == 'char*':
                     if method == 'length':
                         return 'int'
+                    if method == 'replace' and base_ty == 'string':
+                        return 'string'
 
                     if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
@@ -443,6 +446,8 @@ class CodeGen:
             out.append(self._get_str_add_asm())
         if self.uses_str_sub:
             out.append(self._get_str_sub_asm())
+        if self.uses_str_replace:
+            out.append(self._get_str_replace_asm())
             
         out.append('.section .note.GNU-stack,"",@progbits')
         return "\n".join(out) + "\n"
@@ -534,6 +539,106 @@ __c5_str_sub:
     ret
 """
 
+    def _get_str_replace_asm(self):
+        return """
+.global __c5_str_replace
+.weak __c5_str_replace
+.type __c5_str_replace, @function
+__c5_str_replace:
+    push %rbp
+    mov %rsp, %rbp
+    push %r15
+    push %r14
+    push %r13
+    push %r12
+    push %rbx
+    sub $40, %rsp
+    mov %rdi, %r12
+    mov %rsi, %r13
+    mov %rdx, %r14
+    test %r12, %r12
+    jz .Lreturn_null
+    mov %r13, %rdi
+    call strlen@PLT
+    mov %rax, %r15
+    test %rax, %rax
+    jz .Lold_empty
+    mov %r14, %rdi
+    call strlen@PLT
+    mov %rax, -8(%rbp)
+    mov %r12, %rdi
+    call strlen@PLT
+    mov %rax, -16(%rbp)
+    mov %r12, %rdi
+    xor %rbx, %rbx
+.Lcount_loop:
+    mov %r13, %rsi
+    call strstr@PLT
+    test %rax, %rax
+    je .Lcalc_size
+    inc %rbx
+    add %r15, %rax
+    mov %rax, %rdi
+    jmp .Lcount_loop
+.Lcalc_size:
+    mov -16(%rbp), %rax
+    mov -8(%rbp), %rcx
+    sub %r15, %rcx
+    imul %rbx, %rcx
+    add %rcx, %rax
+    inc %rax
+    mov %rax, %rdi
+    call malloc@PLT
+    test %rax, %rax
+    je .Lreturn_null
+    mov %rax, -24(%rbp)
+    mov %rax, %rbx
+.Lcopy_loop:
+    mov %r12, %rdi
+    mov %r13, %rsi
+    call strstr@PLT
+    test %rax, %rax
+    je .Lcopy_rest
+    mov %rax, %rdi
+    sub %r12, %rdi
+    mov %rdi, %rdx
+    mov %r12, %rsi
+    mov %rbx, %rdi
+    mov %rax, -32(%rbp)
+    call memcpy@PLT
+    mov -32(%rbp), %rax
+    sub %r12, %rax
+    add %rax, %rbx
+    mov -8(%rbp), %rdx
+    mov %r14, %rsi
+    mov %rbx, %rdi
+    call memcpy@PLT
+    add -8(%rbp), %rbx
+    mov -32(%rbp), %r12
+    add %r15, %r12
+    jmp .Lcopy_loop
+.Lcopy_rest:
+    mov %r12, %rsi
+    mov %rbx, %rdi
+    call strcpy@PLT
+    mov -24(%rbp), %rax
+    jmp .Lepilogue
+.Lold_empty:
+    mov %r12, %rdi
+    call strdup@PLT
+    jmp .Lepilogue
+.Lreturn_null:
+    xor %rax, %rax
+.Lepilogue:
+    add $40, %rsp
+    pop %rbx
+    pop %r12
+    pop %r13
+    pop %r14
+    pop %r15
+    pop %rbp
+    ret
+"""
     def gen_func(self, node):
         _, ty, name, params, body = node
         self.local_vars = {}
@@ -2313,6 +2418,29 @@ __c5_str_sub:
                             self.text.append(f"    mov {base_addr}, %rdi")
                         self.text.append("    call strlen@PLT")
                         return 'int'
+                    if method == 'replace':
+                        # Load base string pointer into %rdi
+                        if '(%rbp)' in base_addr:
+                            off = int(base_addr.split('(')[0])
+                            self.text.append(f"    mov {off}(%rbp), %rdi")
+                        elif '(%rip)' in base_addr:
+                            self.text.append(f"    mov {base_addr}, %rdi")
+                        else:
+                            self.text.append(f"    mov {base_addr}, %rdi")
+                        # Save base pointer on stack
+                        self.text.append("    push %rdi")
+                        # Generate first argument (old) -> %rsi
+                        ty_arg0 = self.gen_expr(args[0])
+                        self.text.append("    mov %rax, %rsi")
+                        # Generate second argument (new) -> %rdx
+                        ty_arg1 = self.gen_expr(args[1])
+                        self.text.append("    mov %rax, %rdx")
+                        # Restore base pointer into %rdi
+                        self.text.append("    pop %rdi")
+                        # Call helper
+                        self.text.append("    call __c5_str_replace")
+                        self.uses_str_replace = True
+                        return 'string'
                 
                 raise Exception(f"Unknown method {method} on type {base_ty}")
             

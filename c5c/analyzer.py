@@ -280,6 +280,8 @@ class SemanticAnalyzer:
                 base_ty = self._get_type(target[1])
                 if base_ty.startswith('array<') or base_ty == 'string' or base_ty == 'char*':
                     if method == 'length': return 'int'
+                    if method == 'replace' and base_ty == 'string':
+                        return 'string'
                     if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
                     if base_ty.startswith('array<'): return 'void'

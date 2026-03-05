@@ -415,7 +415,25 @@ string s = "Hello";
 s = s + " World";   // Concatenation
 s = s - " Hello";   // Result: " World"
 int len = s.length(); // Get length (6)
+string replaced = s.replace("World", "Everyone"); // Replace substring
 ```
+
+#### String Replacement
+The `.replace(old, new)` method creates a new string with all occurrences of `old` replaced by `new`:
+
+```c
+include <std.c5h>
+
+void main() {
+    string str = "hello, world!";
+    string new_str = str.replace("world", "everyone");
+    std::printf("%s\n", new_str);  // Outputs: "hello, everyone!"
+}
+```
+
+- **`.replace(old, new)`**: Returns a new string with all occurrences of `old` replaced by `new`
+- The original string is not modified (immutable operation)
+- Both `old` and `new` must be string expressions
 
 #### C String Interoperability
 C5 provides seamless interoperability with C strings through the built-in `c_str()` function and string indexing:
