@@ -24,6 +24,7 @@ class CodeGen:
         self.break_targets = []  # Stack of break jump targets (for loops and switches)
         self.try_errors_map = try_errors_map or {}  # Map from try_catch loc to list of errors
         self.catch_param_counter = 0  # For generating unique catch parameter names
+        self.int_format_label = None  # For integer-to-string conversion format
 
     def mangle(self, name):
         return name.replace('::', '_')
@@ -1504,6 +1505,61 @@ __c5_str_sub:
             if src_ty in ('string', 'char*') and dst_ty == 'char':
                 self.text.append("    movzbq (%rax), %rax")
                 return 'char'
+            # String to integer
+            if src_ty in ('string', 'char*') and self._is_integer_type(dst_ty):
+                # Call atoi: expects char* in %rdi, returns int in %rax
+                self.text.append("    mov %rax, %rdi")
+                self.text.append("    call atoi@PLT")
+                # Extend the 32-bit result to the destination integer type size
+                dst_sz = self.sizeof(dst_ty)
+                dst_signed = self._is_signed_type(dst_ty)
+                if dst_sz >= 8:
+                    if dst_signed:
+                        self.text.append("    movslq %eax, %rax")
+                    else:
+                        self.text.append("    movl %eax, %eax")
+                elif dst_sz == 4:
+                    if dst_signed:
+                        self.text.append("    movslq %eax, %rax")
+                    else:
+                        self.text.append("    movl %eax, %eax")
+                elif dst_sz == 2:
+                    if dst_signed:
+                        self.text.append("    movswq %ax, %rax")
+                    else:
+                        self.text.append("    movzwq %ax, %rax")
+                elif dst_sz == 1:
+                    if dst_signed:
+                        self.text.append("    movsbq %al, %rax")
+                    else:
+                        self.text.append("    movzbq %al, %rax")
+                return dst_ty
+            # Integer to string
+            if self._is_integer_type(src_ty) and dst_ty in ('string', 'char*'):
+                # Allocate 16 bytes on stack to store integer and maintain alignment
+                self.text.append("    sub $16, %rsp")  # allocate 16 bytes, keep stack aligned
+                self.text.append("    mov %rax, 8(%rsp)")  # save integer at offset 8
+                # Allocate buffer for string (32 bytes)
+                self.text.append("    mov $32, %rdi")
+                self.text.append("    call malloc@PLT")
+                # Save buffer pointer in the stack slot at 0(%rsp)
+                self.text.append("    mov %rax, (%rsp)")
+                # Prepare arguments for sprintf
+                self.text.append("    mov (%rsp), %rdi")  # buffer
+                # Get or create format string for integer conversion
+                if not self.int_format_label:
+                    self.int_format_label = f".LC_INT_FMT{self.str_count}"
+                    self.str_count += 1
+                    self.rodata.append(f"{self.int_format_label}:")
+                    self.rodata.append('    .string "%d"')
+                self.text.append(f"    lea {self.int_format_label}(%rip), %rsi")  # format
+                self.text.append("    mov 8(%rsp), %rdx")  # integer value
+                self.text.append("    xor %al, %al")  # clear al for variadic function
+                self.text.append("    call sprintf@PLT")
+                # Result buffer pointer is at (%rsp)
+                self.text.append("    mov (%rsp), %rax")  # return buffer pointer
+                self.text.append("    add $16, %rsp")  # deallocate stack space
+                return 'string'
             # If none of the above, unsupported
             raise Exception(f"Unsupported cast from {src_ty} to {dst_ty}")
         elif node[0] == 'unary':
