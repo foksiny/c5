@@ -347,6 +347,86 @@ class SemanticAnalyzer:
                 return None
         return None
 
+    def _sizeof(self, ty):
+        """Calculate the size of a type in bytes, or None if unknown/too large."""
+        # Strip const modifier
+        base_ty = ty
+        if ty.startswith('const '):
+            base_ty = ty[6:]
+        # Strip signed/unsigned modifiers
+        if base_ty.startswith('unsigned ') or base_ty.startswith('signed '):
+            base_ty = base_ty.split(' ', 1)[1]
+        # Pointer types (including void*)
+        if base_ty.endswith('*'):
+            return 8
+        if base_ty == 'fnptr':
+            return 8
+        # Basic types
+        if base_ty == 'int':
+            return 8
+        if base_ty == 'char':
+            return 1
+        if base_ty == 'float':
+            return 8
+        if base_ty == 'float<32>':
+            return 4
+        if base_ty == 'float<64>':
+            return 8
+        if base_ty == 'string':
+            return 8
+        if base_ty == 'void':
+            return 0
+        # Integer with specific width
+        if base_ty.startswith('int<') and base_ty.endswith('>'):
+            try:
+                bits = int(base_ty[4:-1])
+                return (bits + 7) // 8
+            except:
+                return None
+        # Enum types: stored as int (4 bytes)
+        if base_ty in self.enums:
+            return 4
+        # Union types (typedef)
+        if base_ty in self.types:
+            max_size = 0
+            for mem_ty in self.types[base_ty]:
+                mem_size = self._sizeof(mem_ty)
+                if mem_size is None:
+                    return None
+                if mem_size > max_size:
+                    max_size = mem_size
+            if max_size == 0:
+                max_size = 1
+            return max_size
+        # Struct types
+        if base_ty in self.structs:
+            fields = self.structs[base_ty]  # list of (field_type, field_name)
+            offset = 0
+            for fty, fname in fields:
+                fsize = self._sizeof(fty)
+                if fsize is None:
+                    return None
+                align = fsize if fsize < 8 else 8
+                if offset % align != 0:
+                    offset += align - (offset % align)
+                offset += fsize
+            if offset % 8 != 0:
+                offset += 8 - (offset % 8)
+            return offset
+        # Array types: array<elem> is a built-in struct (ptr, len, cap) size 24
+        if base_ty.startswith('array<') and base_ty.endswith('>'):
+            return 24
+        # Unknown type
+        return None
+
+    def _is_register_type(self, ty):
+        """Check if a type can be held in a 64-bit integer register (size <= 8) and is not a float."""
+        # Floats have separate handling and are not suitable for bitwise/logical ops
+        if ty.startswith('float'):
+            return False
+        size = self._sizeof(ty)
+        return size is not None and size <= 8
+
     def _normalize_type(self, ty):
         """Normalize type aliases to canonical forms."""
         if ty == 'int':
@@ -607,8 +687,8 @@ class SemanticAnalyzer:
             if op in ('+', '-') and right[0] == 'number' and str(right[1]) == '0': self.add_warning("W004", loc=loc)
             # Type checking for bitwise and logical operators
             if op in ('&', '|', '^', '<<', '>>', '&&', '||'):
-                if not self._is_integer_type(ty_l) or not self._is_integer_type(ty_r):
-                    self.add_error("E002", f"Operator '{op}' requires integer operands", loc)
+                if not (self._is_register_type(ty_l) and self._is_register_type(ty_r)):
+                    self.add_error("E002", f"Operator '{op}' requires integer-like operands", loc)
             # Shift count validation for constant right operand
             if op in ('<<', '>>') and right[0] == 'number' and isinstance(right[1], int):
                 shift = right[1]
@@ -626,8 +706,8 @@ class SemanticAnalyzer:
             self._analyze_node(target)
             ty = self._get_type(target)
             if op in ('~', '!'):
-                if not self._is_integer_type(ty):
-                    self.add_error("E002", f"Operator '{op}' requires integer operand", loc)
+                if not self._is_register_type(ty):
+                    self.add_error("E002", f"Operator '{op}' requires integer-like operand", loc)
         
         elif tag == 'cast':
             # ('cast', target_type, operand, loc)
