@@ -239,7 +239,7 @@ class CodeGen:
         self.str_count += 1
         self.string_literals[val] = label
         
-        safe_val = val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r')
+        safe_val = val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r').replace('\0', '\\0')
         self.rodata.append(f"{label}:")
         self.rodata.append(f"    .string \"{safe_val}\"")
         return label
