@@ -28,7 +28,7 @@
   '("include" "libinclude" "let" "const" "macro" "type" "fnct"
     "if" "else" "switch" "case" "default"
     "while" "do" "for" "foreach" "in" "break"
-    "return" "try" "catch" "#static" "#dynamic")
+    "return" "try" "catch")
   "Keywords for C5.")
 
 (defvar c5-types
@@ -37,22 +37,35 @@
 
 (defvar c5-font-lock-keywords
   (list
+   ;; Includes with filenames
+   '("^\\s-*\\(?:lib\\)?include\\s-+<\\([^>]+\\)>" (1 font-lock-string-face))
+   ;; Preprocessor-like directives (#static, #dynamic)
+   '("#[a-zA-Z_]+" . font-lock-preprocessor-face)
    ;; Keywords
    (cons (regexp-opt c5-keywords 'words) font-lock-keyword-face)
    ;; Built-in types
    (cons (regexp-opt c5-types 'words) font-lock-type-face)
-   ;; Parameterized types like int<32> or float<64>
-   '("\\<\\(int\\|float\\)<[0-9]+>\\>" . font-lock-type-face)
-   ;; Structs and Enums
-   '("\\<\\(struct\\|enum\\)\\>\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)"
+   ;; Parameterized types (simple ones like int<32>)
+   '("\\<\\(int\\|float\\)<[0-9]+>" . font-lock-type-face)
+   ;; Structs, Enums and Type definitions
+   '("\\<\\(struct\\|enum\\|type\\)\\>\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)"
      (1 font-lock-keyword-face)
-     (2 font-lock-variable-name-face))
-   ;; Function definitions
+     (2 font-lock-type-face))
+   ;; Namespace resolution (e.g., std::printf)
+   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)::\\([a-zA-Z0-9_]*\\)"
+     (1 font-lock-constant-face)
+     (2 font-lock-function-name-face))
+   ;; Function definitions (with return type, possibly generic)
+   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*[*]*\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
+     (1 font-lock-type-face)
+     (2 font-lock-function-name-face))
+   ;; Generic type components (highlight the < and > separately if possible, or just the whole thing)
+   '("<\\|>" . font-lock-comment-delimiter-face)
+   ;; Pointers and member access
+   '("->\\|\\." . font-lock-comment-delimiter-face)
+   ;; Function calls (not definition)
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
      (1 font-lock-function-name-face))
-   ;; Namespace resolution
-   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)::"
-     (1 font-lock-constant-face))
    ;; Constants (integers and floats)
    '("\\<[0-9]+\\(?:\\.[0-9]+\\)?\\>" . font-lock-constant-face)
    '("\\<0x[0-9a-fA-F]+\\>" . font-lock-constant-face))
@@ -66,7 +79,8 @@
   (setq-local comment-start "// ")
   (setq-local comment-end "")
   ;; Basic indentation based on brackets
-  (setq-local indent-line-function 'indent-relative))
+  (setq-local indent-line-function 'indent-relative)
+  (setq-local indent-tabs-mode nil))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.c5\\'" . c5-mode))

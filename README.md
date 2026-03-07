@@ -2,6 +2,9 @@
 
 C5 is a high-performance, statically-typed programming language that compiles directly to x86_64 GAS (GNU Assembler). It is designed to be lightweight, memory-aware, and seamlessly compatible with the C ABI.
 
+> [!NOTE]
+> C5 is a **non-serious** programming language created with the assistance of AI. It was developed to allow its creator to write C-like programs more easily while maintaining fine-grained control over the language's behavior. It is **not intended for commercial use**. However, if you would like to use it for your own projects or contribute to its development, you are more than welcome to do so!
+
 ## 🚀 Key Features
 
 - **Direct x86_64 GAS Compilation**: No heavy IR, just pure, readable assembly.
@@ -883,8 +886,6 @@ void main() {
     
     std::printf("%d %d %d %d %d | %d %d %d\\n", c, d, e, f, g, cond1, cond2, cond3);
 }
-```
-
 ```
 
 ### 18. Type Conversions (Casts)
