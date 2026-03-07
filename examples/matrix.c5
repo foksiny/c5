@@ -1,0 +1,31 @@
+include <std.c5h>
+
+struct Matrix {
+    array<array<float<32>>> data;
+    int rows;
+    int cols;
+};
+
+Matrix create_matrix() {
+    Matrix m;
+    m.rows = 2;
+    m.cols = 3;
+    m.data.push({1.4, 2.8, 9.2});
+    m.data.push({3.9, 2.3, 0.4});
+
+    return m;
+}
+
+void print_matrix(Matrix m) {
+    foreach (i, item in m.data) {
+        std::printf("item[%d]:\n", i);
+        foreach (y, val in item) {
+            std::printf("Val: %.2f\n", val);
+        }
+    }
+}
+
+void main() {
+    Matrix m = create_matrix();
+    print_matrix(m);
+}

@@ -537,7 +537,46 @@ array<int<32>> append_value(array<int<32>> arr) {
 }
 ```
 
-### 10. Pointers & Memory
+### 10. Matrix Support
+C5 supports multi-dimensional arrays (matrices) of any type, including structs, enums, unions, and even other arrays. Matrices are represented as nested `array<array<T>>` types and can be nested to any depth.
+
+```c
+include <std.c5h>
+
+struct Point {
+    float x;
+    float y;
+};
+
+void main() {
+    // 1. Deeply nested float matrix
+    array<array<array<float<32>>>> fmatrix;
+    fmatrix.push({{1.4, 2.8, 9.2}, {3.9, 2.3, 0.4}, {1.0, 2.0, 3.0}});
+    fmatrix.push({{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}});
+
+    // 2. Array of structs (struct matrix)
+    array<array<Point>> pmatrix;
+    pmatrix.push({{1.0, 2.0}, {3.0, 4.0}});
+    pmatrix.push({{5.0, 6.0}, {7.0, 8.0}});
+
+    // Iterating over a 3D matrix
+    foreach (i, item in fmatrix) {
+        foreach (j, row in item) {
+            foreach (k, val in row) {
+                std::printf("fmatrix[%d][%d][%d] = %.2f\n", i, j, k, val);
+            }
+        }
+    }
+}
+```
+
+**Key Features:**
+- **Recursive Type Support**: Matrices can be nested to any depth (e.g., `array<array<array<int>>>`).
+- **Deep Initializer Lists**: Deeply nested matrices can be initialized directly using nested initializer lists.
+- **Heap Allocation**: Like regular arrays, matrices manage their memory on the heap.
+- **Full Type Compatibility**: Supports matrices of any C5 type, including nested aggregates.
+
+### 11. Pointers & Memory
 C5 provides full access to memory with C-like syntax.
 ```c
 include <std.c5h>

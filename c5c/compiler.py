@@ -126,6 +126,83 @@ def _expand_macros(ast, macros):
             new_children.append(child)
     
     return tuple(new_children)
+    
+def _namespace_type(ty, namespace):
+    """Recursively add namespace prefix to a type string."""
+    if not ty: return ty
+    # Built-in types
+    builtins = {'int', 'char', 'float', 'string', 'void', 'fnptr'}
+    
+    # Handle pointers
+    if ty.endswith('*'):
+        return _namespace_type(ty[:-1], namespace) + '*'
+    
+    # Handle template-like types: array<T>, float<32>
+    if '<' in ty:
+        base = ty.split('<')[0]
+        inner = ty[ty.find('<')+1 : ty.rfind('>')]
+        if base == 'array':
+            return f"array<{_namespace_type(inner, namespace)}>"
+        return ty # e.g. float<32>
+    
+    # Handle modifiers
+    for mod in ['const ', 'signed ', 'unsigned ']:
+        if ty.startswith(mod):
+            return mod + _namespace_type(ty[len(mod):], namespace)
+            
+    # If already namespaced or a built-in, leave it
+    if '::' in ty or ty in builtins:
+        return ty
+        
+    # Otherwise, it's a user-defined type name, namespace it
+    return f"{namespace}::{ty}"
+
+def _namespace_types_in_node(node, namespace):
+    """Namespaces all types found within a single AST node (function, struct, etc.)."""
+    if not isinstance(node, tuple):
+        return node
+    
+    tag = node[0]
+    l = list(node)
+    
+    if tag in ('func', 'extern'):
+        # Return type
+        l[1] = _namespace_type(l[1], namespace)
+        # Function name
+        l[2] = f"{namespace}::{l[2]}"
+        # Parameters
+        if len(l) > 3:
+            params = l[3]
+            new_params = []
+            for pty, pname in params:
+                new_params.append((_namespace_type(pty, namespace), pname))
+            l[3] = new_params
+    elif tag == 'struct_decl':
+        # Struct name
+        l[1] = f"{namespace}::{l[1]}"
+        # Fields
+        fields = l[2]
+        new_fields = []
+        for fty, fname in fields:
+            new_fields.append((_namespace_type(fty, namespace), fname))
+        l[2] = new_fields
+    elif tag in ('enum_decl', 'type_decl'):
+        # Enum or Type title
+        l[1] = f"{namespace}::{l[1]}"
+        # If it's a type (union) declaration, namespace the members
+        if tag == 'type_decl':
+            types = l[2]
+            l[2] = [_namespace_type(t, namespace) for t in types]
+    elif tag == 'pub_var':
+        # Type
+        l[1] = _namespace_type(l[1], namespace)
+        # Name
+        l[2] = f"{namespace}::{l[2]}"
+    elif tag == 'macro':
+        # Macro name
+        l[1] = f"{namespace}::{l[1]}"
+        
+    return tuple(l)
 
 def compile_file(filepath, include_paths=None, is_library=False):
     if include_paths is None: include_paths = []
@@ -169,19 +246,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
             namespaced_ast = []
             for n in inc_ast:
                 if isinstance(n, tuple):
-                    tag = n[0]
-                    l = list(n)
-                    if tag in ('func', 'extern'):
-                        l[2] = f"{namespace}::{l[2]}"
-                        namespaced_ast.append(tuple(l))
-                    elif tag in ('struct_decl', 'enum_decl', 'macro', 'type_decl'):
-                        l[1] = f"{namespace}::{l[1]}"
-                        namespaced_ast.append(tuple(l))
-                    elif tag == 'pub_var':
-                        l[2] = f"{namespace}::{l[2]}"
-                        namespaced_ast.append(tuple(l))
-                    else:
-                        namespaced_ast.append(n)
+                    namespaced_ast.append(_namespace_types_in_node(n, namespace))
                 else:
                     namespaced_ast.append(n)
             # Filter out libinclude nodes from the included header and collect them
@@ -297,19 +362,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
                 namespaced_ast = []
                 for n in inc_ast:
                     if isinstance(n, tuple):
-                        tag = n[0]
-                        l = list(n)
-                        if tag in ('func', 'extern'):
-                            l[2] = f"{namespace}::{l[2]}"
-                            namespaced_ast.append(tuple(l))
-                        elif tag in ('struct_decl', 'enum_decl', 'macro', 'type_decl'):
-                            l[1] = f"{namespace}::{l[1]}"
-                            namespaced_ast.append(tuple(l))
-                        elif tag == 'pub_var':
-                            l[2] = f"{namespace}::{l[2]}"
-                            namespaced_ast.append(tuple(l))
-                        else:
-                            namespaced_ast.append(n)
+                        namespaced_ast.append(_namespace_types_in_node(n, namespace))
                     else:
                         namespaced_ast.append(n)
                 # Filter out libinclude nodes from the included header and collect them

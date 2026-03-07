@@ -26,6 +26,9 @@ class CodeGen:
         self.try_errors_map = try_errors_map or {}  # Map from try_catch loc to list of errors
         self.catch_param_counter = 0  # For generating unique catch parameter names
         self.int_format_label = None  # For integer-to-string conversion format
+        self._current_ast = [] # Current AST being generated
+        self.func_has_return = False # Track if function has return
+        self.current_func_ret_ty = "" # Current function return type (initialize to empty string)
 
     def mangle(self, name):
         return name.replace('::', '_')
@@ -72,6 +75,7 @@ class CodeGen:
     # Helper methods for type properties
     def _is_integer_type(self, ty):
         """Check if a type is an integer type (int, char, or sized int)."""
+        if not ty: return False
         if ty in ('int', 'char', 'int<8>', 'int<16>', 'int<32>', 'int<64>'):
             return True
         if ty.startswith('unsigned ') or ty.startswith('signed '):
@@ -83,6 +87,7 @@ class CodeGen:
 
     def _is_signed_type(self, ty):
         """Determine if an integer type is signed."""
+        if not ty: return True
         if ty in ('int', 'char', 'int<8>', 'int<16>', 'int<32>', 'int<64>'):
             return True
         if ty.startswith('signed '):
@@ -91,11 +96,32 @@ class CodeGen:
             return False
         if ty.startswith('int<'):
             return True
-        return False
+        return True
 
     def _is_integer_like(self, ty):
         """Check if type is integer or pointer (both can be held in 64-bit register)."""
+        if not ty: return False
         return self._is_integer_type(ty) or ty.endswith('*')
+
+    def _is_aggregate(self, ty):
+        """Check if a type is an aggregate type (struct or array)."""
+        if not ty: return False
+        if ty.endswith('*'): return False
+        return ty in self.structs or ty.startswith('array<') or ty in self.types or (not ty.startswith('float') and self.sizeof(ty) > 8)
+
+    def _returns_by_stack(self, ty):
+        """Determine if a type is returned via a hidden pointer on the stack."""
+        if not ty: return False
+        if ty.endswith('*'): return False
+        if ty in self.structs: return True
+        if ty in self.types: return True
+        if ty.startswith('array<'): return False # Arrays return in rax/rdx/rcx
+        return not ty.startswith('float') and self.sizeof(ty) > 16
+
+    def _is_float(self, ty):
+        """Check if a type is a float type."""
+        if not ty: return False
+        return ty.startswith('float')
 
     def array_elem_type(self, ty):
         if ty.startswith('array<') and ty.endswith('>'):
@@ -272,7 +298,9 @@ class CodeGen:
             if name in self.global_vars:
                 ty = self.global_vars[name]
                 return f"{self.mangle(name)}(%rip)", ty
-            raise Exception(f"Unknown namespaced var {name}")
+            if name in self.func_signatures:
+                return f"{self.mangle(name)}(%rip)", "fnptr"
+            raise Exception(f"Unknown namespaced symbol {name}")
         elif node[0] == 'member_access':
             base_addr, base_ty = self.get_lvalue(node[1])
             if base_ty in self.structs:
@@ -294,7 +322,7 @@ class CodeGen:
         elif node[0] == 'arrow_access':
             # ptr->field: deref pointer, then offset to field
             ty = self.gen_expr(node[1])  # pointer in %rax
-            if ty.endswith('*'):
+            if ty and ty.endswith('*'):
                 struct_ty = ty[:-1]
                 if struct_ty in self.structs:
                     st = self.structs[struct_ty]
@@ -651,7 +679,7 @@ __c5_str_replace:
         self.text.append(f"{name}:")
         self.text.append("    push %rbp")
         self.text.append("    mov %rsp, %rbp")
-        self.text.append("    sub $512, %rsp")
+        self.text.append("    sub $528, %rsp") # 512 (locals) + 8 (padding) + 8 (to keep 16 alignment with rbp/ra)
         
         int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
         float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
@@ -659,7 +687,7 @@ __c5_str_replace:
         float_idx = 0
         
         # For struct returns, the caller passes a hidden pointer as first arg
-        if ty in self.structs:
+        if self._returns_by_stack(ty):
             self.local_var_offset -= 8
             self.local_vars['__ret_ptr'] = (self.local_var_offset, ty + '*')
             reg = int_regs[int_idx]
@@ -748,7 +776,11 @@ __c5_str_replace:
 
     def gen_stmt(self, node):
         if node[0] == 'expr_stmt':
-            self.gen_expr(node[1])
+            ret_ty = self.gen_expr(node[1])
+            if ret_ty in self.structs:
+                st_sz = self.sizeof(ret_ty)
+                if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
+                self.text.append(f"    add ${st_sz}, %rsp")
         elif node[0] == 'var_decl':
             _, ty, name, init_expr = node
             # Check if init expression is a lambda - use 8 bytes for function pointer
@@ -767,12 +799,25 @@ __c5_str_replace:
             if init_expr and init_expr[0] == 'lambda':
                 self.local_vars[name] = (self.local_var_offset, ty, True)  # Mark as lambda var
             
-            # Zero-initialize arrays when declared without initializer
-            if ty.startswith('array<') and not init_expr:
+            # Zero-initialize aggregates when declared without initializer
+            if not init_expr and self._is_aggregate(ty):
                 base_off = self.local_var_offset
-                self.text.append(f"    movq $0, {base_off}(%rbp)")       # data ptr = NULL
-                self.text.append(f"    movq $0, {base_off+8}(%rbp)")     # length = 0
-                self.text.append(f"    movq $0, {base_off+16}(%rbp)")    # capacity = 0
+                sz = self.sizeof(ty)
+                if sz <= 24: # Small size, use inline movs
+                    for i in range(0, sz, 8):
+                        if i + 8 <= sz:
+                            self.text.append(f"    movq $0, {base_off+i}(%rbp)")
+                        elif sz - i == 4:
+                            self.text.append(f"    movl $0, {base_off+i}(%rbp)")
+                        elif sz - i == 2:
+                            self.text.append(f"    movw $0, {base_off+i}(%rbp)")
+                        elif sz - i == 1:
+                            self.text.append(f"    movb $0, {base_off+i}(%rbp)")
+                else:
+                    self.text.append(f"    lea {base_off}(%rbp), %rdi")
+                    self.text.append("    xor %rsi, %rsi")
+                    self.text.append(f"    mov ${sz}, %rdx")
+                    self.text.append("    call memset@PLT")
             
             if init_expr:
                 # Set expected return type for lambda expressions
@@ -780,105 +825,40 @@ __c5_str_replace:
                     self.lambda_ret_type = ty
                 
                 if init_expr[0] == 'init_list':
-                    if ty.startswith('array<'):
-                        # Array init from init_list: allocate, set len/cap, copy data
-                        elem_ty = self.array_elem_type(ty)
-                        elem_sz = self.sizeof(elem_ty)
-                        items = init_expr[1]
-                        # If element type is a struct and items are not init_lists, treat as a single struct initializer
-                        if elem_ty in self.structs and all(item[0] != 'init_list' for item in items):
-                            items = [('init_list', items)]
-                        count = len(items)
-                        alloc_sz = 999  # forced for debugging
-                        base_off = self.local_var_offset
-                        # malloc for data
-                        self.text.append(f"    mov ${alloc_sz}, %rdi")
-                        self.text.append("    call malloc@PLT")
-                        self.text.append(f"    mov %rax, {base_off}(%rbp)")       # data ptr
-                        self.text.append(f"    movq ${count}, {base_off+8}(%rbp)")  # length
-                        self.text.append(f"    movq ${count}, {base_off+16}(%rbp)") # capacity
-                        # Fill elements
-                        for i, val in enumerate(items):
-                            off = i * elem_sz
-                            if val[0] == 'init_list' and elem_ty in self.structs:
-                                # Struct initializer: fill fields directly in array memory
-                                st = self.structs[elem_ty]
-                                field_list = list(st['fields'].items())
-                                for fi, fval in enumerate(val[1]):
-                                    fname, finfo = field_list[fi]
-                                    self.gen_expr(fval)
-                                    self.text.append(f"    mov {base_off}(%rbp), %rcx")  # reload data ptr
-                                    foff = off + finfo['offset']
-                                    if finfo['type'].startswith('float'):
-                                        if finfo['type'] == 'float<32>':
-                                            self.text.append(f"    movss %xmm0, {foff}(%rcx)")
-                                        else:
-                                            self.text.append(f"    movsd %xmm0, {foff}(%rcx)")
-                                    else:
-                                        fsz = self.sizeof(finfo['type'])
-                                        if fsz == 1:
-                                            self.text.append(f"    mov %al, {foff}(%rcx)")
-                                        elif fsz == 2:
-                                            self.text.append(f"    mov %ax, {foff}(%rcx)")
-                                        elif fsz == 4:
-                                            self.text.append(f"    mov %eax, {foff}(%rcx)")
-                                        else:
-                                            self.text.append(f"    mov %rax, {foff}(%rcx)")
-                            else:
-                                # Primitive or enum element
-                                self.gen_expr(val)
-                                self.text.append(f"    mov {base_off}(%rbp), %rcx")  # reload data ptr
-                                if elem_sz == 1:
-                                    self.text.append(f"    mov %al, {off}(%rcx)")
-                                elif elem_sz == 2:
-                                    self.text.append(f"    mov %ax, {off}(%rcx)")
-                                elif elem_sz == 4:
-                                    self.text.append(f"    mov %eax, {off}(%rcx)")
-                                else:
-                                    self.text.append(f"    mov %rax, {off}(%rcx)")
-                    elif ty in self.structs:
-                        st = self.structs[ty]
-                        field_list = list(st['fields'].items())
-                        for i, init_val in enumerate(init_expr[1]):
-                            fname, finfo = field_list[i]
-                            foffset = self.local_var_offset + finfo['offset']
-                            ret_ty = self.gen_expr(init_val)
-                            
-                            if finfo['type'].startswith('float'):
-                                if finfo['type'] == 'float<32>':
-                                    self.text.append(f"    movss %xmm0, {foffset}(%rbp)")
-                                else:
-                                    self.text.append(f"    movsd %xmm0, {foffset}(%rbp)")
-                            else:
-                                fsz = self.sizeof(finfo['type'])
-                                if fsz == 1:
-                                    self.text.append(f"    mov %al, {foffset}(%rbp)")
-                                elif fsz == 2:
-                                    self.text.append(f"    mov %ax, {foffset}(%rbp)")
-                                elif fsz == 4:
-                                    self.text.append(f"    mov %eax, {foffset}(%rbp)")
-                                else:
-                                    self.text.append(f"    mov %rax, {foffset}(%rbp)")
+                    # Recursive initialization
+                    self._gen_init_list_recursive(init_expr, ty)
+                    # Result is on stack (aggregate or primitive), copy to local variable
+                    sz = self.sizeof(ty)
+                    self.text.append(f"    lea {self.local_var_offset}(%rbp), %rdi")
+                    self.text.append("    mov %rsp, %rsi")
+                    self.text.append(f"    mov ${sz}, %rdx")
+                    self.text.append("    call memcpy@PLT")
+                    self.text.append(f"    add ${sz}, %rsp") # pop temp
                 else:
                     ret_ty = self.gen_expr(init_expr)
+                    if ret_ty:
+                        self.text.append(f"    # DEBUG: ret_ty={ret_ty}")
                     if ret_ty == 'fnptr':
                         # Lambda expression - always store as 8-byte pointer
                         self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
                         # Clean up lambda return type
                         if hasattr(self, 'lambda_ret_type'):
                             delattr(self, 'lambda_ret_type')
-                    elif ret_ty and ret_ty.endswith('*') and ret_ty[:-1] in self.structs and not ty.endswith('*'):
-                        # Function returns a struct pointer - copy to variable
-                        # But only if the declared type is NOT a pointer (i.e., we want the struct value)
-                        struct_ty = ret_ty[:-1]
-                        st_sz = self.sizeof(struct_ty)
-                        # ret_ty is a pointer to the struct in %rax
-                        # Copy from %rax to local_var_offset
+                    elif self._returns_by_stack(ret_ty) or (ret_ty and ret_ty.endswith('*') and not ty.endswith('*') and self._is_aggregate(ret_ty[:-1])):
+                        # Function returns a struct by value (rax=rsp) or pointer (rax=ptr)
+                        is_on_stack = self._returns_by_stack(ret_ty)
+                        src_ty = ret_ty if is_on_stack else ret_ty[:-1]
+                        st_sz = self.sizeof(src_ty)
                         self.text.append("    mov %rax, %rsi")  # src
                         self.text.append(f"    lea {self.local_var_offset}(%rbp), %rdi")  # dest
                         self.text.append(f"    mov ${st_sz}, %rdx")
                         self.text.append("    call memcpy@PLT")
-                    elif ty.startswith('float'):
+                        if is_on_stack:
+                            # Clean up stack temporary
+                            pad_sz = st_sz
+                            if pad_sz % 16 != 0: pad_sz += 16 - (pad_sz % 16)
+                            self.text.append(f"    add ${pad_sz}, %rsp")
+                    elif self._is_float(ty):
                         if ty == 'float<32>':
                             if ret_ty == 'float' or ret_ty == 'float<64>':
                                 self.text.append("    cvtsd2ss %xmm0, %xmm0")
@@ -894,15 +874,11 @@ __c5_str_replace:
                         self.text.append(f"    mov %rdx, {base_off+8}(%rbp)")     # length
                         self.text.append(f"    mov %rcx, {base_off+16}(%rbp)")    # capacity
                     else:
-                        fsz = self.sizeof(ty)
-                        if fsz == 1:
-                            self.text.append(f"    mov %al, {self.local_var_offset}(%rbp)")
-                        elif fsz == 2:
-                            self.text.append(f"    mov %ax, {self.local_var_offset}(%rbp)")
-                        elif fsz == 4:
-                            self.text.append(f"    mov %eax, {self.local_var_offset}(%rbp)")
-                        else:
-                            self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                        sz = self.sizeof(ty)
+                        if sz == 1: self.text.append(f"    mov %al, {self.local_var_offset}(%rbp)")
+                        elif sz == 2: self.text.append(f"    mov %ax, {self.local_var_offset}(%rbp)")
+                        elif sz == 4: self.text.append(f"    mov %eax, {self.local_var_offset}(%rbp)")
+                        else: self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
         elif node[0] == 'try_catch_stmt':
             self.gen_try_catch(node)
         elif node[0] == 'return_stmt':
@@ -924,7 +900,7 @@ __c5_str_replace:
                 
                 # Check if returning a struct - use function's return type
                 func_ret_ty = getattr(self, 'current_func_ret_ty', 'int')
-                if func_ret_ty in self.structs:
+                if self._returns_by_stack(func_ret_ty):
                     # Get the hidden return pointer
                     ret_ptr_off = self.local_vars['__ret_ptr'][0]
                     self.text.append(f"    mov {ret_ptr_off}(%rbp), %r11")  # dest ptr in r11
@@ -976,7 +952,13 @@ __c5_str_replace:
                     self.text.append("    ret")
                     return
                 
-                self.gen_expr(ret_expr)
+                ty_e = self.gen_expr(ret_expr)
+                if ty_e and ty_e.startswith('array<'):
+                    # Load array fields into rax, rdx, rcx for return
+                    self.text.append("    mov (%rax), %r11")
+                    self.text.append("    mov 8(%rax), %rdx")
+                    self.text.append("    mov 16(%rax), %rcx")
+                    self.text.append("    mov %r11, %rax")
             self.text.append("    leave")
             self.text.append("    ret")
         elif node[0] == 'while_stmt':
@@ -1045,7 +1027,7 @@ __c5_str_replace:
             elem_sz = self.sizeof(elem_ty)
             
             # Check if element type is a struct
-            is_struct = elem_ty in self.structs
+            is_struct = elem_ty in self.structs or elem_ty.startswith('array<') or elem_ty in self.types or self.sizeof(elem_ty) > 8
             
             # Check if array_expr is a simple variable reference
             is_global_array = False
@@ -1069,9 +1051,13 @@ __c5_str_replace:
                     
                     # Evaluate array expression and store it
                     self.gen_expr(array_expr)
-                    self.text.append(f"    mov %rax, {array_off}(%rbp)")       # data ptr
-                    self.text.append(f"    mov %rdx, {array_off+8}(%rbp)")     # length
-                    self.text.append(f"    mov %rcx, {array_off+16}(%rbp)")    # capacity
+                    # Expression returned pointer to header in %rax
+                    self.text.append("    mov (%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off}(%rbp)")       # data ptr
+                    self.text.append("    mov 8(%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off+8}(%rbp)")     # length
+                    self.text.append("    mov 16(%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off+16}(%rbp)")    # capacity
             else:
                 # For strings, normalize to a temp (ptr, len)
                 self.local_var_offset -= 16
@@ -1095,14 +1081,13 @@ __c5_str_replace:
             self.local_vars[index_var] = (index_off, 'int')
             self.text.append(f"    movq $0, {index_off}(%rbp)")
             
-            # Allocate value variable - use actual element size for structs
-            if is_struct:
+            # Allocate value variable - use actual element size
+            # For structs or large types, align then allocate full size
+            if is_struct or elem_sz > 8:
                 # Align to 8 bytes
                 if abs(self.local_var_offset) % 8 != 0:
                     self.local_var_offset -= 8 - (abs(self.local_var_offset) % 8)
-                self.local_var_offset -= elem_sz
-            else:
-                self.local_var_offset -= 8
+            self.local_var_offset -= elem_sz
             value_off = self.local_var_offset
             self.local_vars[value_var] = (value_off, elem_ty)
             
@@ -1125,8 +1110,8 @@ __c5_str_replace:
             self.text.append("    add %rax, %r11")
             
             # Load element at r11 into value variable
-            if is_struct:
-                # Use memcpy for struct types
+            if is_struct or elem_sz > 8:
+                # Use memcpy for struct types or large elements
                 self.text.append(f"    lea {value_off}(%rbp), %rdi")  # dest
                 self.text.append("    mov %r11, %rsi")  # src
                 self.text.append(f"    mov ${elem_sz}, %rdx")  # size
@@ -1141,6 +1126,7 @@ __c5_str_replace:
                 self.text.append(f"    movl (%r11), %eax")
                 self.text.append(f"    mov %eax, {value_off}(%rbp)")
             else:
+                # elem_sz == 8
                 self.text.append(f"    movq (%r11), %rax")
                 self.text.append(f"    mov %rax, {value_off}(%rbp)")
             
@@ -1411,6 +1397,96 @@ __c5_str_replace:
             min_val = 0
             max_val = (1 << bits) - 1
         return (min_val, max_val)
+    def _gen_init_list_recursive(self, node, target_ty):
+        """
+        Generates code for an initializer list (node) of type target_ty.
+        Leaves the resulting value/struct on the stack.
+        Returns the type (target_ty).
+        """
+        if node[0] != 'init_list':
+            res_ty = self.gen_expr(node)
+            if self._is_float(res_ty) and self._is_float(target_ty) and res_ty != target_ty:
+                if target_ty == 'float<32>': self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                else: self.text.append("    cvtss2sd %xmm0, %xmm0")
+            
+            if self._is_float(target_ty):
+                self.text.append("    sub $8, %rsp")
+                if target_ty == 'float<32>': self.text.append("    movss %xmm0, (%rsp)")
+                else: self.text.append("    movsd %xmm0, (%rsp)")
+            elif self._is_aggregate(target_ty):
+                # Copy existing aggregate to stack
+                sz = self.sizeof(target_ty)
+                self.text.append(f"    sub ${sz}, %rsp")
+                self.text.append("    mov %rax, %rsi") # src (addr returned by gen_expr for aggregates)
+                self.text.append("    mov %rsp, %rdi") # dest
+                self.text.append(f"    mov ${sz}, %rdx")
+                self.text.append("    sub $8, %rsp") # Ensure alignment
+                self.text.append("    call memcpy@PLT")
+                self.text.append("    add $8, %rsp")
+            else:
+                self.text.append("    push %rax")
+            return target_ty
+
+        if target_ty and target_ty.startswith('array<'):
+            elem_ty = self.array_elem_type(target_ty)
+            elem_sz = self.sizeof(elem_ty)
+            items = node[1]
+            count = len(items)
+            alloc_sz = count * elem_sz if count > 0 else 8
+            
+            self.text.append("    sub $8, %rsp") # ALIGN (assuming entry at 16k or 16k+8)
+            self.text.append(f"    mov ${alloc_sz}, %rdi")
+            self.text.append("    call malloc@PLT")
+            self.text.append("    add $8, %rsp") # RESTORE
+            self.text.append("    push %rax") # data_ptr at (%rsp)
+            
+            for i, item in enumerate(items):
+                self._gen_init_list_recursive(item, elem_ty)
+                p_sz = self.sizeof(elem_ty) if self._is_aggregate(elem_ty) else 8
+                self.text.append(f"    mov {p_sz}(%rsp), %rdi") # data_ptr
+                self.text.append(f"    add ${i * elem_sz}, %rdi") # dest
+                self.text.append("    mov %rsp, %rsi") # src
+                self.text.append(f"    mov ${elem_sz}, %rdx")
+                self.text.append("    call memcpy@PLT")
+                self.text.append(f"    add ${p_sz}, %rsp")
+            
+            self.text.append(f"    movq ${count}, %rax")
+            self.text.append("    push %rax") # cap
+            self.text.append("    push %rax") # len
+            # Initial order: [ptr, cap, len] (wrong)
+            # Wait, no. Current stack: [len, cap, ptr]
+            # pop rdx (len), pop rcx (cap), pop rax (ptr)
+            # push rcx (cap), push rdx (len), push rax (ptr)
+            # Top of stack: [ptr, len, cap] (correct for 24-byte array struct)
+            self.text.append("    pop %rdx") # len
+            self.text.append("    pop %rcx") # cap
+            self.text.append("    pop %rax") # ptr
+            self.text.append("    push %rcx") # cap
+            self.text.append("    push %rdx") # len
+            self.text.append("    push %rax") # ptr
+            return target_ty
+
+        if target_ty in self.structs:
+            st = self.structs[target_ty]
+            st_sz = st['size']
+            fields = list(st['fields'].items())
+            items = node[1]
+            
+            self.text.append(f"    sub ${st_sz}, %rsp")
+            for i, item in enumerate(items):
+                if i >= len(fields): break
+                fname, finfo = fields[i]
+                f_ty = finfo['type']
+                self._gen_init_list_recursive(item, f_ty)
+                p_sz = self.sizeof(f_ty) if self._is_aggregate(f_ty) else 8
+                self.text.append(f"    lea {p_sz + finfo['offset']}(%rsp), %rdi") # dest
+                self.text.append("    mov %rsp, %rsi") # src
+                self.text.append(f"    mov ${self.sizeof(f_ty)}, %rdx")
+                self.text.append("    call memcpy@PLT")
+                self.text.append(f"    add ${p_sz}, %rsp")
+            return target_ty
+            
+        return target_ty
 
     def gen_expr(self, node):
         if node[0] == 'number':
@@ -1427,39 +1503,11 @@ __c5_str_replace:
             label = self.get_string_label(node[1])
             self.text.append(f"    lea {label}(%rip), %rax")
             return "string"
-        elif node[0] == 'namespace_access':
+        elif node[0] == 'namespace_access' and node[1] in self.enums:
             base, name = node[1], node[2]
-            namespaced_name = f"{base}::{name}"
-            mangled = self.mangle(namespaced_name)
-            if base in self.enums and name in self.enums[base]:
-                val = self.enums[base][name]
-                self.text.append(f"    mov ${val}, %rax")
-                return "int"
-            elif namespaced_name in self.global_vars:
-                ty = self.global_vars[namespaced_name]
-                sz = self.sizeof(ty)
-                if ty.startswith('float'):
-                   if ty == 'float<32>': self.text.append(f"    movss {mangled}(%rip), %xmm0")
-                   else: self.text.append(f"    movsd {mangled}(%rip), %xmm0")
-                else:
-                    is_unsigned = ty.startswith('unsigned ')
-                    if sz == 1:
-                        if is_unsigned: self.text.append(f"    movzbq {mangled}(%rip), %rax")
-                        else: self.text.append(f"    movsbq {mangled}(%rip), %rax")
-                    elif sz == 2:
-                        if is_unsigned: self.text.append(f"    movzwq {mangled}(%rip), %rax")
-                        else: self.text.append(f"    movswq {mangled}(%rip), %rax")
-                    elif sz == 4:
-                        if is_unsigned: self.text.append(f"    movl {mangled}(%rip), %eax")
-                        else: self.text.append(f"    movslq {mangled}(%rip), %rax")
-                    else:
-                        self.text.append(f"    mov {mangled}(%rip), %rax")
-                return ty
-            elif namespaced_name in self.func_signatures:
-                self.text.append(f"    lea {mangled}(%rip), %rax")
-                return "fnptr"
-            else:
-                raise Exception(f"Unknown namespace access: {namespaced_name}")
+            val = self.enums[base][name]
+            self.text.append(f"    mov ${val}, %rax")
+            return "int"
         elif node[0] == 'lambda':
             # Lambda expression: generate a unique function and return its address
             params, body = node[1], node[2]
@@ -1489,7 +1537,7 @@ __c5_str_replace:
             lambda_text.append(f"{lambda_name}:")
             lambda_text.append("    push %rbp")
             lambda_text.append("    mov %rsp, %rbp")
-            lambda_text.append("    sub $512, %rsp")
+            lambda_text.append("    sub $528, %rsp") # align 512 locals with ra/rbp
             
             int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
             float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
@@ -1724,7 +1772,7 @@ __c5_str_replace:
                 self.text.append("    movzbq %al, %rax")
                 return 'int'
             return "unknown"
-        elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access'):
+        elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access', 'namespace_access'):
             addr, ty = self.get_lvalue(node)
             sz = self.sizeof(ty)
             # For struct types, return the address as a pointer
@@ -1743,13 +1791,28 @@ __c5_str_replace:
                     self.text.append(f"    lea {addr}, %rax")
                 return ty + '*'  # Return as pointer to struct
             elif ty.startswith('array<'):
-                # For array types, load data pointer, length, and capacity into registers
-                # Use %r11 as temporary to hold base address
-                self.text.append(f"    lea {addr}, %r11")
-                self.text.append("    mov (%r11), %rax")      # data pointer
-                self.text.append("    mov 8(%r11), %rdx")     # length
-                self.text.append("    mov 16(%r11), %rcx")    # capacity
-                return ty
+                # For array types, return the address in %rax (treating as aggregate)
+                if '(%r10)' in addr:
+                    off = int(addr.split('(')[0]) if addr.split('(')[0] else 0
+                    self.text.append(f"    lea {off}(%r10), %rax")
+                elif '(%r11)' in addr:
+                    # If address is already in r11 (from array access), return it in rax
+                    # addr is "(%r11)" or "offset(%r11)"
+                    if '(' in addr:
+                        base = addr.split('(')[1][:-1]
+                        off = addr.split('(')[0] if addr.split('(')[0] else "0"
+                        self.text.append(f"    lea {off}(%{base}), %rax")
+                    else:
+                        self.text.append(f"    lea {addr}, %rax")
+                elif '(%rbp)' in addr:
+                    off = int(addr.split('(')[0])
+                    self.text.append(f"    lea {off}(%rbp), %rax")
+                elif '(%rax)' in addr:
+                    off = int(addr.split('(')[0]) if addr.split('(')[0] else 0
+                    self.text.append(f"    lea {off}(%rax), %rax")
+                else:
+                    self.text.append(f"    lea {addr}, %rax")
+                return ty + '*'
             elif ty.startswith('float'):
                 if ty == 'float<32>':
                     self.text.append(f"    movss {addr}, %xmm0")
@@ -1787,208 +1850,75 @@ __c5_str_replace:
                 self.text.append("    push %rax")
                 ty_r = self.gen_expr(right)
                 self.text.append("    pop %rcx") # Address in %rcx, value in %rax
-                sz = 8
-                if ty_r.startswith('float'):
+                if self._is_float(ty_r):
                     if ty_r == 'float<32>': self.text.append("    movss %xmm0, (%rcx)")
                     else: self.text.append("    movsd %xmm0, (%rcx)")
                 else:
                     self.text.append("    mov %rax, (%rcx)")
                 return ty_r
 
-            # Special case for array_access assignment: arr[i] = val
-            if left[0] == 'array_access':
-                addr, ty_l = self.get_lvalue(left)  # elem address in (%r11)
-                is_struct = ty_l in self.structs
-                
-                if is_struct:
-                    # For struct assignment, use memcpy
-                    # Get source address
-                    if right[0] == 'init_list':
-                        # Struct initializer: create temp struct on stack
-                        st = self.structs[ty_l]
-                        st_sz = self.sizeof(ty_l)
-                        self.text.append(f"    sub ${st_sz}, %rsp")
-                        field_list = list(st['fields'].items())
-                        for fi, fval in enumerate(right[1]):
-                            fname, finfo = field_list[fi]
-                            self.gen_expr(fval)
-                            foff = finfo['offset']
-                            if finfo['type'].startswith('float'):
-                                if finfo['type'] == 'float<32>':
-                                    self.text.append(f"    movss %xmm0, {foff}(%rsp)")
-                                else:
-                                    self.text.append(f"    movsd %xmm0, {foff}(%rsp)")
-                            else:
-                                fsz = self.sizeof(finfo['type'])
-                                if fsz == 1:
-                                    self.text.append(f"    mov %al, {foff}(%rsp)")
-                                elif fsz == 2:
-                                    self.text.append(f"    mov %ax, {foff}(%rsp)")
-                                elif fsz == 4:
-                                    self.text.append(f"    mov %eax, {foff}(%rsp)")
-                                else:
-                                    self.text.append(f"    mov %rax, {foff}(%rsp)")
-                        self.text.append("    mov %rsp, %rsi")  # src
-                    else:
-                        # Get address of source struct
-                        src_addr, src_ty = self.get_lvalue(right)
-                        if '(%rbp)' in src_addr:
-                            src_off = int(src_addr.split('(')[0])
-                            self.text.append(f"    lea {src_off}(%rbp), %rsi")
-                        elif '(%r11)' in src_addr:
-                            off = int(src_addr.split('(')[0]) if src_addr.split('(')[0] else 0
-                            self.text.append(f"    lea {off}(%r11), %rsi")
-                        else:
-                            self.text.append(f"    lea {src_addr}, %rsi")
-                    
-                    # Get dest address (element is at (%r11))
-                    self.text.append("    mov %r11, %rdi")  # dest
-                    self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")  # size
-                    self.text.append("    call memcpy@PLT")
-                    
-                    if right[0] == 'init_list':
-                        st_sz = self.sizeof(ty_l)
-                        self.text.append(f"    add ${st_sz}, %rsp")
-                    return ty_l
-                else:
-                    ty_r = self.gen_expr(right)
-                    self.text.append("    push %rax")  # save value
-                    self.text.append("    pop %rax")
-                    fsz = self.sizeof(ty_l)
-                    if fsz == 1:
-                        self.text.append(f"    mov %al, {addr}")
-                    elif fsz == 2:
-                        self.text.append(f"    mov %ax, {addr}")
-                    elif fsz == 4:
-                        self.text.append(f"    mov %eax, {addr}")
-                    else:
-                        self.text.append(f"    mov %rax, {addr}")
-                    return ty_r
-
-            # Special case for arrow_access assignment: ptr->field = val
-            if left[0] == 'arrow_access':
-                # First get the struct pointer into %rax, save to %r11
-                addr, ty_l = self.get_lvalue(left)  # ptr in %rax, addr is offset(%rax)
-                self.text.append("    mov %rax, %r11")  # save struct ptr
-                ty_r = self.gen_expr(right)  # value in %rax
-                # Reconstruct the address using %r11
-                fixed_addr = addr.replace('%rax', '%r11')
-                fsz = self.sizeof(ty_l)
-                if ty_l.startswith('float'):
-                    if ty_l == 'float<32>':
-                        self.text.append(f"    movss %xmm0, {fixed_addr}")
-                    else:
-                        self.text.append(f"    movsd %xmm0, {fixed_addr}")
-                else:
-                    if fsz == 1:
-                        self.text.append(f"    mov %al, {fixed_addr}")
-                    elif fsz == 2:
-                        self.text.append(f"    mov %ax, {fixed_addr}")
-                    elif fsz == 4:
-                        self.text.append(f"    mov %eax, {fixed_addr}")
-                    else:
-                        self.text.append(f"    mov %rax, {fixed_addr}")
-                return ty_r
-
-            # Special case for member_access assignment where base is array_access: arr[i].field = val
-            if left[0] == 'member_access' and left[1][0] == 'array_access':
-                ty_r = self.gen_expr(right)
-                self.text.append("    push %rax")  # save value
-                addr, ty_l = self.get_lvalue(left)  # this computes address in r11
-                self.text.append("    pop %rax")  # restore value
-                fsz = self.sizeof(ty_l)
-                if ty_l.startswith('float'):
-                    if ty_l == 'float<32>':
-                        self.text.append(f"    movss %xmm0, {addr}")
-                    else:
-                        self.text.append(f"    movsd %xmm0, {addr}")
-                else:
-                    if fsz == 1:
-                        self.text.append(f"    mov %al, {addr}")
-                    elif fsz == 2:
-                        self.text.append(f"    mov %ax, {addr}")
-                    elif fsz == 4:
-                        self.text.append(f"    mov %eax, {addr}")
-                    else:
-                        self.text.append(f"    mov %rax, {addr}")
-                return ty_r
-
-            # Check if left side is a struct type
             addr, ty_l = self.get_lvalue(left)
-            is_struct = ty_l in self.structs
             
-            if is_struct:
-                # For struct assignment, use memcpy
-                if right[0] == 'init_list':
-                    # Struct initializer: create temp struct on stack
-                    st = self.structs[ty_l]
-                    st_sz = self.sizeof(ty_l)
-                    self.text.append(f"    sub ${st_sz}, %rsp")
-                    field_list = list(st['fields'].items())
-                    for fi, fval in enumerate(right[1]):
-                        fname, finfo = field_list[fi]
-                        self.gen_expr(fval)
-                        foff = finfo['offset']
-                        if finfo['type'].startswith('float'):
-                            if finfo['type'] == 'float<32>':
-                                self.text.append(f"    movss %xmm0, {foff}(%rsp)")
-                            else:
-                                self.text.append(f"    movsd %xmm0, {foff}(%rsp)")
-                        else:
-                            fsz = self.sizeof(finfo['type'])
-                            if fsz == 1:
-                                self.text.append(f"    mov %al, {foff}(%rsp)")
-                            elif fsz == 2:
-                                self.text.append(f"    mov %ax, {foff}(%rsp)")
-                            elif fsz == 4:
-                                self.text.append(f"    mov %eax, {foff}(%rsp)")
-                            else:
-                                self.text.append(f"    mov %rax, {foff}(%rsp)")
-                    self.text.append("    mov %rsp, %rsi")  # src
-                    # Get dest address
-                    if '(%rbp)' in addr:
-                        off = int(addr.split('(')[0])
-                        self.text.append(f"    lea {off}(%rbp), %rdi")
-                    else:
-                        self.text.append(f"    lea {addr}, %rdi")
-                    self.text.append(f"    mov ${st_sz}, %rdx")
+            # If the address is dynamic (uses volatile registers), save it on stack
+            addr_on_stack = False
+            if any(reg in addr for reg in ['(%rax)', '(%r10)', '(%r11)']):
+                self.text.append(f"    lea {addr}, %r10")
+                self.text.append("    push %r10")
+                addr_on_stack = True
+                addr = "(%r10)" # Will be popped into r10
+
+            if right[0] == 'init_list':
+                self._gen_init_list_recursive(right, ty_l)
+                if addr_on_stack: self.text.append("    pop %rdi")
+                else: self.text.append(f"    lea {addr}, %rdi")
+                self.text.append("    mov %rsp, %rsi")
+                self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
+                self.text.append("    call memcpy@PLT")
+                self.text.append(f"    add ${self.sizeof(ty_l)}, %rsp")
+                return ty_l
+            
+            if self._is_aggregate(ty_l):
+                # Aggregate assignment or function return
+                ty_r = self.gen_expr(right)
+                if addr_on_stack: self.text.append("    pop %rdi")
+                else: self.text.append(f"    lea {addr}, %rdi")
+                
+                # Check if ty_r is a value on stack or a pointer
+                if self._returns_by_stack(ty_r):
+                    # Result is on top of stack (from a function call)
+                    self.text.append("    mov %rsp, %rsi")
+                    self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
                     self.text.append("    call memcpy@PLT")
+                    # Clean up the stack temporary
+                    st_sz = self.sizeof(ty_l)
+                    if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
                     self.text.append(f"    add ${st_sz}, %rsp")
                 else:
-                    # Assign from another struct variable
-                    src_addr, src_ty = self.get_lvalue(right)
-                    if '(%rbp)' in src_addr:
-                        src_off = int(src_addr.split('(')[0])
-                        self.text.append(f"    lea {src_off}(%rbp), %rsi")
-                    else:
-                        self.text.append(f"    lea {src_addr}, %rsi")
-                    # Get dest address
-                    if '(%rbp)' in addr:
-                        off = int(addr.split('(')[0])
-                        self.text.append(f"    lea {off}(%rbp), %rdi")
-                    else:
-                        self.text.append(f"    lea {addr}, %rdi")
+                    # Result is a pointer in rax
+                    self.text.append("    mov %rax, %rsi")
                     self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
                     self.text.append("    call memcpy@PLT")
                 return ty_l
             
             ty_r = self.gen_expr(right)
-            fsz = self.sizeof(ty_l)
-            if ty_l.startswith('float'):
+            if addr_on_stack:
+                self.text.append("    pop %r10")
+                addr = "(%r10)"
+            if self._is_float(ty_l):
                 if ty_l == 'float<32>':
+                    if ty_r == 'float' or ty_r == 'float<64>': self.text.append("    cvtsd2ss %xmm0, %xmm0")
                     self.text.append(f"    movss %xmm0, {addr}")
                 else:
+                    if ty_r == 'float<32>': self.text.append("    cvtss2sd %xmm0, %xmm0")
                     self.text.append(f"    movsd %xmm0, {addr}")
             else:
-                if fsz == 1:
-                    self.text.append(f"    mov %al, {addr}")
-                elif fsz == 2:
-                    self.text.append(f"    mov %ax, {addr}")
-                elif fsz == 4:
-                    self.text.append(f"    mov %eax, {addr}")
-                else:
-                    self.text.append(f"    mov %rax, {addr}")
-            return ty_r
+                sz = self.sizeof(ty_l)
+                if sz == 1: self.text.append(f"    mov %al, {addr}")
+                elif sz == 2: self.text.append(f"    mov %ax, {addr}")
+                elif sz == 4: self.text.append(f"    mov %eax, {addr}")
+                else: self.text.append(f"    mov %rax, {addr}")
+            return ty_l
+
         elif node[0] == 'binop':
             op = node[1]
             left = node[2]
@@ -2255,7 +2185,7 @@ __c5_str_replace:
                 method = target[2]
                 base = target[1]
                 base_addr, base_ty = self.get_lvalue(base)
-                if base_ty.startswith('array<'):
+                if base_ty and base_ty.startswith('array<'):
                     elem_ty = self.array_elem_type(base_ty)
                     elem_sz = self.sizeof(elem_ty)
                     is_global = False
@@ -2277,95 +2207,14 @@ __c5_str_replace:
                     
                     if method == 'push':
                         # For struct types, we need special handling
-                        is_struct = elem_ty in self.structs
+                        is_struct = elem_ty in self.structs or (elem_ty and elem_ty.startswith('array<')) or (elem_ty and elem_ty in self.types) or self.sizeof(elem_ty) > 8
                         
                         if is_struct:
                             # For structs, get the source address and use memcpy
                             if args[0][0] == 'init_list':
-                                # Struct initializer: create temp struct on stack, then copy
-                                st = self.structs[elem_ty]
-                                st_sz = self.sizeof(elem_ty)
-                                # Allocate temp space on stack
-                                self.text.append(f"    sub ${st_sz}, %rsp")
-                                temp_off = 0  # offset from rsp
-                                field_list = list(st['fields'].items())
-                                for fi, fval in enumerate(args[0][1]):
-                                    fname, finfo = field_list[fi]
-                                    field_type = finfo['type']
-                                    foff = temp_off + finfo['offset']
-                                    if fval[0] == 'init_list' and field_type.startswith('array<'):
-                                        # Array field initialization
-                                        field_elem_ty = self.array_elem_type(field_type)
-                                        field_elem_sz = self.sizeof(field_elem_ty)
-                                        items = fval[1]
-                                        # Force wrapping for testing: treat as single struct initializer
-                                        items = [('init_list', items)]
-                                        count = len(items)
-                                        alloc_sz = count * field_elem_sz
-                                        # malloc
-                                        self.text.append(f"    mov ${alloc_sz}, %rdi")
-                                        self.text.append("    call malloc@PLT")
-                                        # Store array struct fields
-                                        self.text.append(f"    mov %rax, {foff}(%rsp)")       # data ptr
-                                        self.text.append(f"    movq ${count}, {foff+8}(%rsp)")  # length
-                                        self.text.append(f"    movq ${count}, {foff+16}(%rsp)") # capacity
-                                        # Fill elements
-                                        for i, item in enumerate(items):
-                                            off = i * field_elem_sz
-                                            if item[0] == 'init_list' and field_elem_ty in self.structs:
-                                                st = self.structs[field_elem_ty]
-                                                field_list2 = list(st['fields'].items())
-                                                for fi2, fval2 in enumerate(item[1]):
-                                                    fname2, finfo2 = field_list2[fi2]
-                                                    self.gen_expr(fval2)
-                                                    self.text.append(f"    mov {foff}(%rsp), %rcx")  # reload data ptr
-                                                    foff2 = off + finfo2['offset']
-                                                    if finfo2['type'].startswith('float'):
-                                                        if finfo2['type'] == 'float<32>':
-                                                            self.text.append(f"    movss %xmm0, {foff2}(%rcx)")
-                                                        else:
-                                                            self.text.append(f"    movsd %xmm0, {foff2}(%rcx)")
-                                                    else:
-                                                        fsz2 = self.sizeof(finfo2['type'])
-                                                        if fsz2 == 1:
-                                                            self.text.append(f"    mov %al, {foff2}(%rcx)")
-                                                        elif fsz2 == 2:
-                                                            self.text.append(f"    mov %ax, {foff2}(%rcx)")
-                                                        elif fsz2 == 4:
-                                                            self.text.append(f"    mov %eax, {foff2}(%rcx)")
-                                                        else:
-                                                            self.text.append(f"    mov %rax, {foff2}(%rcx)")
-                                            else:
-                                                self.gen_expr(item)
-                                                self.text.append(f"    mov {foff}(%rsp), %rcx")
-                                                if field_elem_sz == 1:
-                                                    self.text.append(f"    mov %al, {off}(%rcx)")
-                                                elif field_elem_sz == 2:
-                                                    self.text.append(f"    mov %ax, {off}(%rcx)")
-                                                elif field_elem_sz == 4:
-                                                    self.text.append(f"    mov %eax, {off}(%rcx)")
-                                                else:
-                                                    self.text.append(f"    mov %rax, {off}(%rcx)")
-                                    else:
-                                        self.gen_expr(fval)
-                                        if field_type.startswith('float'):
-                                            if field_type == 'float<32>':
-                                                self.text.append(f"    movss %xmm0, {foff}(%rsp)")
-                                            else:
-                                                self.text.append(f"    movsd %xmm0, {foff}(%rsp)")
-                                        else:
-                                            fsz = self.sizeof(field_type)
-                                            if fsz == 1:
-                                                self.text.append(f"    mov %al, {foff}(%rsp)")
-                                            elif fsz == 2:
-                                                self.text.append(f"    mov %ax, {foff}(%rsp)")
-                                            elif fsz == 4:
-                                                self.text.append(f"    mov %eax, {foff}(%rsp)")
-                                            else:
-                                                self.text.append(f"    mov %rax, {foff}(%rsp)")
-                                # Save src addr on stack (will be restored after potential realloc)
+                                self._gen_init_list_recursive(args[0], elem_ty)
                                 self.text.append("    mov %rsp, %r11")
-                                self.text.append("    push %r11")  # save src addr
+                                self.text.append("    push %r11") # save src addr
                             else:
                                 # Push from variable: get address of source struct
                                 src_addr, src_ty = self.get_lvalue(args[0])
@@ -2397,15 +2246,9 @@ __c5_str_replace:
                         self.text.append(f"{cap_ok}:")
                         self.text.append(f"    mov %rdi, {arr_ref(16)}")  # update cap
                         self.text.append(f"    imul ${elem_sz}, %rdi")
-                        self.text.append(f"    mov {arr_ref(0)}, %rsi")     # old data ptr (2nd arg for realloc)
-                        self.text.append("    xchg %rdi, %rsi")  # rdi=old_ptr, rsi=new_size
-                        self.text.append("    mov %rsi, %rsi")   # clear upper bits
-                        self.text.append("    xchg %rdi, %rsi")  # rdi=size, rsi=old_ptr -> wrong, fix:
-                        # Actually realloc(ptr, size): rdi=ptr, rsi=size
-                        self.text.pop(); self.text.pop(); self.text.pop(); self.text.pop()
-                        self.text.append(f"    mov {arr_ref(0)}, %rdi")     # old ptr
-                        self.text.append(f"    mov {arr_ref(16)}, %rsi")  # new cap
-                        self.text.append(f"    imul ${elem_sz}, %rsi")
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi")     # old data ptr (1st arg for realloc)
+                        self.text.append(f"    mov {arr_ref(16)}, %rsi")     # new cap
+                        self.text.append(f"    imul ${elem_sz}, %rsi")      # size (2nd arg for realloc)
                         self.text.append("    sub $8, %rsp")   # align stack to 16-byte boundary before call
                         self.text.append("    call realloc@PLT")
                         self.text.append("    add $8, %rsp")
@@ -2422,11 +2265,12 @@ __c5_str_replace:
                             self.text.append("    add %r10, %rdi")  # dest = data + len*elem_sz
                             self.text.append("    mov %r11, %rsi")  # src
                             self.text.append(f"    mov ${elem_sz}, %rdx")  # size
+                            self.text.append("    sub $8, %rsp")
                             self.text.append("    call memcpy@PLT")
+                            self.text.append("    add $8, %rsp")
                             if args[0][0] == 'init_list':
                                 # Restore stack after temp struct
-                                st_sz = self.sizeof(elem_ty)
-                                self.text.append(f"    add ${st_sz}, %rsp")
+                                self.text.append(f"    add ${self.sizeof(elem_ty)}, %rsp")
                         else:
                             self.text.append("    pop %rax")  # restore value
                             self.text.append(f"    mov {arr_ref(0)}, %rcx")  # data ptr
@@ -2447,7 +2291,7 @@ __c5_str_replace:
                     
                     elif method == 'pop':
                         # Decrement length, return data[new_len]
-                        is_struct = elem_ty in self.structs
+                        is_struct = elem_ty in self.structs or (elem_ty and elem_ty.startswith('array<')) or (elem_ty and elem_ty in self.types) or self.sizeof(elem_ty) > 8
                         self.text.append(f"    decq {arr_ref(8)}")
                         self.text.append(f"    mov {arr_ref(8)}, %r10") # new len
                         self.text.append(f"    mov {arr_ref(0)}, %rcx")   # data ptr
@@ -2475,7 +2319,7 @@ __c5_str_replace:
                     elif method == 'clear':
                         self.text.append(f"    movq $0, {arr_ref(8)}")
                         return 'void'
-                elif base_ty == 'string' or base_ty == 'char*':
+                elif base_ty and (base_ty == 'string' or base_ty == 'char*'):
                     if method == 'length':
                         if '(%rbp)' in base_addr:
                             off = int(base_addr.split('(')[0])
@@ -2511,6 +2355,7 @@ __c5_str_replace:
                         return 'string'
                 
                 raise Exception(f"Unknown method {method} on type {base_ty}")
+
             
             # Handle built-in c_str() function
             if target[0] == 'id' and target[1] == 'c_str':
@@ -2556,7 +2401,7 @@ __c5_str_replace:
             
             # For struct returns, allocate space on stack for the return value BEFORE pushing args
             # This way the struct space will be at the bottom of the stack after all pops
-            if ret_ty in self.structs:
+            if self._returns_by_stack(ret_ty):
                 st_sz = self.sizeof(ret_ty)
                 # Align to 16 bytes
                 if st_sz % 16 != 0:
@@ -2684,15 +2529,10 @@ __c5_str_replace:
                         arg_types.append(ty)
                     elif ty.startswith('array<'):
                         # Push array fields in LIFO order: cap, len, ptr
-                        if arg[0] == 'id' and arg[1] in self.local_vars:
-                            var_info = self.local_vars[arg[1]]
-                            aoff = var_info[0]
-                            aty = var_info[1]
-                            self.text.append(f"    pushq {aoff+16}(%rbp)")  # cap (popped last)
-                            self.text.append(f"    pushq {aoff+8}(%rbp)")   # len (popped 2nd)
-                            self.text.append(f"    pushq {aoff}(%rbp)")     # ptr (popped 1st)
-                        else:
-                            self.text.append("    push %rax")
+                        # The expression returned the address of the 24-byte header in %rax
+                        self.text.append("    pushq 16(%rax)")  # cap (popped last)
+                        self.text.append("    pushq 8(%rax)")   # len (popped 2nd)
+                        self.text.append("    pushq (%rax)")    # ptr (popped 1st)
                         arg_types.append(ty)
                     elif ty in self.structs:
                         # Struct argument: ty is the struct type (not pointer)
@@ -2745,7 +2585,7 @@ __c5_str_replace:
             
             # For struct returns, args start from %rsi (skip %rdi for hidden pointer)
             # So we need to shift register indices
-            reg_offset = 1 if ret_ty in self.structs else 0
+            reg_offset = 1 if self._returns_by_stack(ret_ty) else 0
             
             int_idx = int_slots - 1 + reg_offset
             float_idx = float_slots - 1
@@ -2799,12 +2639,16 @@ __c5_str_replace:
                     int_idx -= 1
                     self.text.append(f"    pop {reg}")
 
-            # For struct returns, load hidden pointer into %rdi
-            if ret_ty in self.structs:
+            # For struct returns, allocate space and load hidden pointer into %rdi
+            if self._returns_by_stack(ret_ty):
+                st_sz = self.sizeof(ret_ty)
+                # Align to 16 bytes
+                if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
+                self.text.append(f"    sub ${st_sz}, %rsp")
                 self.text.append(f"    mov %rsp, %rdi")  # Hidden pointer in %rdi
 
             if is_vararg:
-                float_count = len([ty for ty in arg_types if ty.startswith('float')])
+                float_count = len([ty for ty in arg_types if ty and ty.startswith('float')])
                 self.text.append(f"    mov ${float_count}, %eax")
             
             if is_func_ptr_call:
@@ -2815,14 +2659,10 @@ __c5_str_replace:
             else:
                 self.text.append(f"    call {func_name}@PLT")
             
-            # For struct returns, the result is in the hidden pointer location
-            # Return pointer to the struct in rax
-            if ret_ty in self.structs:
-                st_sz = self.sizeof(ret_ty)
-                # Align to 16 bytes
-                if st_sz % 16 != 0:
-                    st_sz += 16 - (st_sz % 16)
-                self.text.append("    mov %rsp, %rax")  # Return pointer to struct on stack
-                return ret_ty + '*'  # Return as pointer type
+            # For struct returns, the result is in the hidden pointer location (top of stack)
+            # Return current stack pointer in rax and the base type (indicating it's on stack)
+            if self._returns_by_stack(ret_ty):
+                self.text.append("    mov %rsp, %rax")
+                return ret_ty
             
             return ret_ty
