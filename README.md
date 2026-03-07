@@ -727,9 +727,9 @@ Type definitions are global and must be declared before use. They are stored in 
 
 #### Notes
 
-- The language currently does not enforce strict type checking for assignments to union types; any value can be assigned, but it is the programmer's responsibility to ensure the correct variant is used.
-- The size of a union type is automatically computed as the maximum size of its members.
-- You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
+- **Full Type Checking Support**: The language now enforces strict type checking for assignments to both union types and type aliases. Any assigned value must be compatible with at least one of the underlying types.
+- **Computed Sizes**: The size of a union type is automatically computed as the maximum size of its members.
+- **Recursive Members**: You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
 
 ### 15. Type Width Checking
 
@@ -801,7 +801,6 @@ void main() {
 **Key features:**
 - Exceptions are thrown automatically when certain runtime errors occur (e.g., division by zero, out-of-bounds array access).
 - The exception message is passed as a `string` to the `catch` block.
-- You can have multiple `catch` blocks to handle different exception types (future enhancement).
 - Use `std::exit()` or `return` to terminate the program or continue execution after handling the error.
 
 ---
