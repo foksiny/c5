@@ -11,6 +11,6 @@ void main() {
 
     std::printf("PI_INT: %d\n", math::PI_INT);
 
-    int<32> op = math::Operation::ADD;
+    math::Operation op = math::Operation::ADD;
     std::printf("OP ADD: %d\n", op);
 }
