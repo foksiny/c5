@@ -596,7 +596,7 @@ void main() {
 }
 ```
 
-### 11. Public Variables (Globals)
+### 12. Public Variables (Globals)
 Use the `let` keyword at the top level to declare global variables.
 ```c
 let int<32> counter = 0;
@@ -607,7 +607,7 @@ void main() {
 }
 ```
 
-### 12. Macros
+### 13. Macros
 C5 supports simple macros that are expanded at compile time. Macros are defined using the `macro` keyword and work like inline functions.
 
 ```c
@@ -630,7 +630,7 @@ void main() {
 - **Zero overhead**: Macros are expanded at compile time, no runtime cost
 - **Type flexibility**: Macros work with any compatible types
 
-### 13. Lambda Expressions
+### 14. Lambda Expressions
 C5 supports lambda expressions (anonymous functions) that can be assigned to variables and called like regular functions.
 
 ```c
@@ -676,7 +676,7 @@ void main() {
 }
 ```
 
-### 14. Type Definitions
+### 15. Type Definitions
 
 C5 supports user-defined type aliases and union-like types using the `type` keyword. This allows you to create a new type that can hold values of any of the specified underlying types.
 
@@ -731,7 +731,7 @@ Type definitions are global and must be declared before use. They are stored in 
 - **Computed Sizes**: The size of a union type is automatically computed as the maximum size of its members.
 - **Recursive Members**: You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
 
-### 15. Type Width Checking
+### 16. Type Width Checking
 
 C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
 
@@ -765,7 +765,7 @@ These checks help prevent accidental overflow and data loss.
 
 ---
 
-### 16. Exception Handling
+### 17. Exception Handling
 
 C5 supports exception handling through `try-catch` blocks, allowing you to handle runtime errors gracefully.
 
@@ -805,7 +805,7 @@ void main() {
 
 ---
 
-### 17. Operators
+### 18. Operators
 
 C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, and comparison operations. All operators follow C-like precedence and associativity.
 
@@ -887,7 +887,7 @@ void main() {
 }
 ```
 
-### 18. Type Conversions (Casts)
+### 19. Type Conversions (Casts)
 
 C5 supports explicit type conversions (casts) using the syntax `(target_type) expression`. Casts allow you to convert a value from one type to another, overriding the compiler's default type checking.
 
