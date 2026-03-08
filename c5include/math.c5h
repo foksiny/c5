@@ -1,0 +1,87 @@
+libinclude <math.a> #static
+
+// Constants
+let const float PI  = 3.14159265358979323846;
+let const float E   = 2.71828182845904523536;
+let const float TAU = 6.28318530717958647692;
+let const float PHI = 1.61803398874989484820;  // golden ratio
+let const float LN2  = 0.69314718055994530941;
+let const float LN10 = 2.30258509299404568401;
+let const float SQRT2 = 1.41421356237309504880;
+let const float INF = 1e999;
+
+// ---- abs / fabs ----
+int<64>   abs(int<64> x);
+float<64> fabs(float<64> x);
+
+// ---- min / max ----
+int<64>   min(int<64> a, int<64> b);
+int<64>   max(int<64> a, int<64> b);
+float<64> fmin(float<64> a, float<64> b);
+float<64> fmax(float<64> a, float<64> b);
+
+// ---- clamp ----
+int<64>   clamp(int<64> val, int<64> low, int<64> high);
+float<64> fclamp(float<64> val, float<64> low, float<64> high);
+
+// ---- sign ----
+int<64>   sign(int<64> x);
+float<64> fsign(float<64> x);
+
+// ---- power / roots ----
+int<64>   pow(int<64> base, int<64> exp);
+int<64>   isqrt(int<64> n);
+float<64> sqrt(float<64> n);
+float<64> fpow(float<64> x, float<64> y);
+
+// ---- factorial ----
+int<64>   factorial(int<64> n);
+
+// ---- GCD / LCM ----
+int<64>   gcd(int<64> a, int<64> b);
+int<64>   lcm(int<64> a, int<64> b);
+
+// ---- numeric checks ----
+unsigned int<1> is_even(int<64> n);
+unsigned int<1> is_odd(int<64> n);
+unsigned int<1> is_prime(int<64> n);
+
+// ---- interpolation ----
+float<64> lerp(float<64> a, float<64> b, float<64> t);
+float<64> smoothstep(float<64> edge0, float<64> edge1, float<64> x);
+
+// ---- floor / ceil / round (returns int) ----
+int<64>   floorf(float<64> x);
+int<64>   ceilf(float<64> x);
+int<64>   roundf(float<64> x);
+
+// ---- float utilities ----
+float<64> fmod(float<64> a, float<64> b);
+float<64> wrap(float<64> val, float<64> lo, float<64> hi);
+int<64>   wrap_int(int<64> val, int<64> lo, int<64> hi);
+
+// ---- angle conversion ----
+float<64> deg_to_rad(float<64> deg);
+float<64> rad_to_deg(float<64> rad);
+
+// ---- exponential & logarithms ----
+float<64> exp(float<64> x);
+float<64> ln(float<64> x);
+float<64> log10(float<64> x);
+float<64> log2(float<64> x);
+float<64> logbase(float<64> x, float<64> base);
+
+// ---- trigonometry ----
+float<64> sin(float<64> x);
+float<64> cos(float<64> x);
+float<64> tan(float<64> x);
+float<64> atan(float<64> x);
+float<64> atan2(float<64> y, float<64> x);
+
+// ---- geometry ----
+float<64> hypot(float<64> a, float<64> b);
+
+// ---- hyperbolic ----
+float<64> sinh(float<64> x);
+float<64> cosh(float<64> x);
+float<64> tanh(float<64> x);

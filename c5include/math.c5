@@ -1,0 +1,439 @@
+// ============================================================
+// C5 Math Library - math.c5
+// Compile: c5c math.c5 --lib static -o math
+// ============================================================
+
+// ---- abs / fabs ----
+
+int<64> abs(int<64> x) {
+    if (x < 0) { return 0 - x; }
+    return x;
+}
+
+float<64> fabs(float<64> x) {
+    if (x < 0.0) { return 0.0 - x; }
+    return x;
+}
+
+// ---- min / max ----
+
+int<64> min(int<64> a, int<64> b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+int<64> max(int<64> a, int<64> b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+float<64> fmin(float<64> a, float<64> b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+float<64> fmax(float<64> a, float<64> b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+// ---- clamp ----
+
+int<64> clamp(int<64> val, int<64> low, int<64> high) {
+    if (val < low) { return low; }
+    if (val > high) { return high; }
+    return val;
+}
+
+float<64> fclamp(float<64> val, float<64> low, float<64> high) {
+    if (val < low) { return low; }
+    if (val > high) { return high; }
+    return val;
+}
+
+// ---- sign ----
+
+int<64> sign(int<64> x) {
+    if (x > 0) { return 1; }
+    if (x < 0) { return 0 - 1; }
+    return 0;
+}
+
+float<64> fsign(float<64> x) {
+    if (x > 0.0) { return 1.0; }
+    if (x < 0.0) { return 0.0 - 1.0; }
+    return 0.0;
+}
+
+// ---- power / integer square root ----
+
+int<64> pow(int<64> base, int<64> exp) {
+    if (exp < 0) { return 0; }
+    int<64> result = 1;
+    for (int i = 0; i < exp; i = i + 1) {
+        result = result * base;
+    }
+    return result;
+}
+
+int<64> isqrt(int<64> n) {
+    if (n < 0) { return 0; }
+    if (n < 2) { return n; }
+    int<64> x = n;
+    int<64> y = (x + 1) / 2;
+    while (y < x) {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+// ---- factorial ----
+
+int<64> factorial(int<64> n) {
+    if (n < 0) { return 0; }
+    int<64> result = 1;
+    for (int i = 1; i <= n; i = i + 1) {
+        result = result * i;
+    }
+    return result;
+}
+
+// ---- GCD / LCM ----
+
+int<64> gcd(int<64> a, int<64> b) {
+    if (a < 0) { a = 0 - a; }
+    if (b < 0) { b = 0 - b; }
+    while (b != 0) {
+        int<64> tmp = b;
+        b = a % b;
+        a = tmp;
+    }
+    return a;
+}
+
+int<64> lcm(int<64> a, int<64> b) {
+    if (a == 0 || b == 0) { return 0; }
+    int<64> g = gcd(a, b);
+    return abs(a / g * b);
+}
+
+// ---- numeric checks ----
+
+unsigned int<1> is_even(int<64> n) {
+    if (n % 2 == 0) { return 1; }
+    return 0;
+}
+
+unsigned int<1> is_odd(int<64> n) {
+    if (n % 2 != 0) { return 1; }
+    return 0;
+}
+
+unsigned int<1> is_prime(int<64> n) {
+    if (n < 2) { return 0; }
+    if (n == 2) { return 1; }
+    if (n % 2 == 0) { return 0; }
+    int<64> i = 3;
+    while (i * i <= n) {
+        if (n % i == 0) { return 0; }
+        i = i + 2;
+    }
+    return 1;
+}
+
+// ---- interpolation ----
+
+float<64> lerp(float<64> a, float<64> b, float<64> t) {
+    return a + (b - a) * t;
+}
+
+float<64> smoothstep(float<64> edge0, float<64> edge1, float<64> x) {
+    float<64> t = fclamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// ---- floor / ceil / round ----
+
+int<64> floorf(float<64> x) {
+    int<64> i = (int<64>)x;
+    if (x < 0.0) {
+        float<64> fi = (float<64>)i;
+        if (fi != x) { return i - 1; }
+    }
+    return i;
+}
+
+int<64> ceilf(float<64> x) {
+    int<64> i = (int<64>)x;
+    if (x > 0.0) {
+        float<64> fi = (float<64>)i;
+        if (fi != x) { return i + 1; }
+    }
+    return i;
+}
+
+int<64> roundf(float<64> x) {
+    if (x >= 0.0) { return (int<64>)(x + 0.5); }
+    return (int<64>)(x - 0.5);
+}
+
+// ---- float utilities ----
+
+float<64> fmod(float<64> a, float<64> b) {
+    int<64> q = (int<64>)(a / b);
+    return a - (float<64>)q * b;
+}
+
+float<64> wrap(float<64> val, float<64> lo, float<64> hi) {
+    float<64> range = hi - lo;
+    float<64> v = fmod(val - lo, range);
+    if (v < 0.0) { v = v + range; }
+    return lo + v;
+}
+
+int<64> wrap_int(int<64> val, int<64> lo, int<64> hi) {
+    int<64> range = hi - lo;
+    int<64> v = (val - lo) % range;
+    if (v < 0) { v = v + range; }
+    return lo + v;
+}
+
+// ---- angle conversion ----
+
+float<64> deg_to_rad(float<64> deg) {
+    // PI / 180
+    return deg * 0.017453292519943295;
+}
+
+float<64> rad_to_deg(float<64> rad) {
+    // 180 / PI
+    return rad * 57.29577951308232;
+}
+
+// ---- float square root (Newton-Raphson) ----
+
+float<64> sqrt(float<64> n) {
+    if (n < 0.0) { return 0.0; }
+    if (n == 0.0) { return 0.0; }
+    float<64> x = n;
+    float<64> prev = 0.0;
+    int i = 0;
+    while (i < 60) {
+        prev = x;
+        x = (x + n / x) * 0.5;
+        float<64> diff = x - prev;
+        if (diff < 0.0) { diff = 0.0 - diff; }
+        if (diff < 0.000000000001) {
+            i = 61;
+        }
+        i = i + 1;
+    }
+    return x;
+}
+
+// ---- exp(x) via Taylor series: e^x = sum(x^n / n!, n=0..inf) ----
+
+float<64> exp(float<64> x) {
+    if (x == 0.0) { return 1.0; }
+    if (x > 700.0) { return 10000000000000000000000000000000000.0; } // Very large
+    if (x < -700.0) { return 0.0; }
+    
+    // Range reduction: exp(x) = 2^k * exp(r) where k = round(x / ln2)
+    int<64> k = roundf(x / 0.6931471805599453);
+    float<64> r = x - (float<64>)k * 0.6931471805599453;
+    
+    // Taylor series for exp(r) - r is small (|r| <= ln2/2)
+    float<64> result = 1.0;
+    float<64> term = 1.0;
+    int i = 1;
+    while (i <= 40) {
+        float<64> fi = (float<64>)i;
+        term = term * r / fi;
+        result = result + term;
+        i = i + 1;
+    }
+    
+    // Multiply by 2^k
+    float<64> p2 = 1.0;
+    if (k > 0) {
+        for (int j = 0; j < k; j = j + 1) {
+            p2 = p2 * 2.0;
+        }
+    } else if (k < 0) {
+        for (int m = 0; m > k; m = m - 1) {
+            p2 = p2 * 0.5;
+        }
+    }
+    
+    return result * p2;
+}
+
+// ---- ln(x) via series: ln(x) = 2*(y + y^3/3 + y^5/5 + ...) where y=(x-1)/(x+1) ----
+
+float<64> ln(float<64> x) {
+    if (x <= 0.0) { return 0.0; }
+    
+    float<64> k = 0.0;
+    while (x > 1.414213562373095) {
+        x = x * 0.5;
+        k = k + 1.0;
+    }
+    while (x < 0.7071067811865476) {
+        x = x * 2.0;
+        k = k - 1.0;
+    }
+    
+    // Now x is in [0.7071, 1.4142], so y is in roughly [-0.17, 0.17]
+    float<64> y = (x - 1.0) / (x + 1.0);
+    float<64> y2 = y * y;
+    float<64> result = y;
+    float<64> term = y;
+    int i = 1;
+    while (i <= 60) {
+        float<64> denom = (float<64>)(2 * i + 1);
+        term = term * y2;
+        result = result + term / denom;
+        i = i + 1;
+    }
+    
+    // ln(x) = ln(m) + k * ln(2)
+    return result * 2.0 + k * 0.6931471805599453;
+}
+
+float<64> log10(float<64> x) {
+    // log10(x) = ln(x) / ln(10)
+    return ln(x) / 2.302585092994046;
+}
+
+float<64> log2(float<64> x) {
+    // log2(x) = ln(x) / ln(2)
+    return ln(x) / 0.6931471805599453;
+}
+
+float<64> logbase(float<64> x, float<64> base) {
+    return ln(x) / ln(base);
+}
+
+// ---- pow for floats: x^y = exp(y * ln(x)) ----
+
+float<64> fpow(float<64> x, float<64> y) {
+    if (x <= 0.0) { return 0.0; }
+    return exp(y * ln(x));
+}
+
+// ---- sin(x) via Taylor: x - x^3/3! + x^5/5! - x^7/7! + ... ----
+
+float<64> sin(float<64> x) {
+    // Reduce x to [-PI, PI]
+    float<64> two_pi = 6.283185307179586;
+    float<64> pi = 3.141592653589793;
+    int<64> k = (int<64>)(x / two_pi);
+    x = x - (float<64>)k * two_pi;
+    if (x > pi)  { x = x - two_pi; }
+    if (x < 0.0 - pi) { x = x + two_pi; }
+
+    float<64> result = x;
+    float<64> term = x;
+    float<64> x2 = x * x;
+    int i = 1;
+    while (i <= 15) {
+        float<64> n1 = (float<64>)(2 * i);
+        float<64> n2 = (float<64>)(2 * i + 1);
+        term = term * (0.0 - x2) / (n1 * n2);
+        result = result + term;
+        i = i + 1;
+    }
+    return result;
+}
+
+// ---- cos(x) via Taylor: 1 - x^2/2! + x^4/4! - x^6/6! + ... ----
+
+float<64> cos(float<64> x) {
+    // Reduce x to [-PI, PI]
+    float<64> two_pi = 6.283185307179586;
+    float<64> pi = 3.141592653589793;
+    int<64> k = (int<64>)(x / two_pi);
+    x = x - (float<64>)k * two_pi;
+    if (x > pi)  { x = x - two_pi; }
+    if (x < 0.0 - pi) { x = x + two_pi; }
+
+    float<64> result = 1.0;
+    float<64> term = 1.0;
+    float<64> x2 = x * x;
+    int i = 1;
+    while (i <= 15) {
+        float<64> n1 = (float<64>)(2 * i - 1);
+        float<64> n2 = (float<64>)(2 * i);
+        term = term * (0.0 - x2) / (n1 * n2);
+        result = result + term;
+        i = i + 1;
+    }
+    return result;
+}
+
+// ---- tan(x) = sin(x) / cos(x) ----
+
+float<64> tan(float<64> x) {
+    float<64> c = cos(x);
+    if (c == 0.0) { return 0.0; }
+    return sin(x) / c;
+}
+
+// ---- atan(x) via series (|x| <= 1) with identity for |x| > 1 ----
+
+float<64> atan(float<64> x) {
+    float<64> pi_2 = 1.5707963267948966;
+    float<64> neg = 1.0;
+    if (x < 0.0) { x = 0.0 - x; neg = 0.0 - 1.0; }
+
+    // Use identity atan(x) = PI/2 - atan(1/x) for x > 1
+    unsigned int<1> flipped = 0;
+    if (x > 1.0) { x = 1.0 / x; flipped = 1; }
+
+    // Taylor: atan(x) = x - x^3/3 + x^5/5 - ...
+    float<64> x2 = x * x;
+    float<64> result = x;
+    float<64> term = x;
+    int i = 1;
+    while (i <= 50) {
+        float<64> denom = (float<64>)(2 * i + 1);
+        term = term * (0.0 - x2);
+        result = result + term / denom;
+        i = i + 1;
+    }
+
+    if (flipped == 1) { result = pi_2 - result; }
+    return result * neg;
+}
+
+float<64> atan2(float<64> y, float<64> x) {
+    float<64> pi = 3.141592653589793;
+    if (x > 0.0) { return atan(y / x); }
+    if (x < 0.0 && y >= 0.0) { return atan(y / x) + pi; }
+    if (x < 0.0 && y < 0.0)  { return atan(y / x) - pi; }
+    if (x == 0.0 && y > 0.0) { return pi / 2.0; }
+    if (x == 0.0 && y < 0.0) { return 0.0 - pi / 2.0; }
+    return 0.0;
+}
+
+// ---- hypot ----
+
+float<64> hypot(float<64> a, float<64> b) {
+    return sqrt(a * a + b * b);
+}
+
+// ---- hyperbolic functions via exp ----
+
+float<64> sinh(float<64> x) {
+    return (exp(x) - exp(0.0 - x)) * 0.5;
+}
+
+float<64> cosh(float<64> x) {
+    return (exp(x) + exp(0.0 - x)) * 0.5;
+}
+
+float<64> tanh(float<64> x) {
+    float<64> e2x = exp(2.0 * x);
+    return (e2x - 1.0) / (e2x + 1.0);
+}

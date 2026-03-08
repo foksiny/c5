@@ -29,6 +29,7 @@ class CodeGen:
         self._current_ast = [] # Current AST being generated
         self.func_has_return = False # Track if function has return
         self.current_func_ret_ty = "" # Current function return type (initialize to empty string)
+        self.global_array_inits = []  # List of (mangled_name, ty, init_node) for global arrays
 
     def mangle(self, name):
         return name.replace('::', '_')
@@ -450,11 +451,18 @@ class CodeGen:
                     if sz == 4: self.data.append(f"    .float {init[1]}")
                     else: self.data.append(f"    .double {init[1]}")
                 else:
+                    # init_list or other complex initializer: zero the memory now,
+                    # actual initialization will happen at runtime via __c5_global_init
                     self.data.append(f"    .zero {sz}")
+                    self.global_array_inits.append((mangled, ty, init))
 
         for node in ast:
             if node[0] == 'func':
                 self.gen_func(node)
+
+        # Generate __c5_global_init if there are any global array/struct initializers
+        if self.global_array_inits:
+            self._gen_global_init_func()
 
         out = []
         if self.rodata:
@@ -667,6 +675,59 @@ __c5_str_replace:
     pop %rbp
     ret
 """
+    def _gen_global_init_func(self):
+        """Generate __c5_global_init that initializes global array/struct variables at runtime."""
+        init_text = []
+        init_text.append(".global __c5_global_init")
+        init_text.append(".type __c5_global_init, @function")
+        init_text.append("__c5_global_init:")
+        init_text.append("    push %rbp")
+        init_text.append("    mov %rsp, %rbp")
+        init_text.append("    sub $528, %rsp")
+
+        # Save/restore local state
+        saved_text = self.text
+        saved_local_vars = self.local_vars.copy()
+        saved_local_var_offset = self.local_var_offset
+        saved_func_ret_ty = self.current_func_ret_ty
+
+        self.text = init_text
+        self.local_vars = {}
+        self.local_var_offset = 0
+        self.current_func_ret_ty = 'void'
+
+        for mangled_name, ty, init_node in self.global_array_inits:
+            # Generate the init_list expression into a temporary local
+            res_ty = self._gen_init_list_recursive(init_node, ty)
+            # Result is on the stack as a 24-byte array header (ptr, len, cap)
+            # Copy it into the global variable
+            if ty.startswith('array<'):
+                # Stack top: ptr (8), len (8), cap (8)
+                self.text.append(f"    pop %rax")          # ptr
+                self.text.append(f"    mov %rax, {mangled_name}(%rip)")
+                self.text.append(f"    pop %rax")          # len
+                self.text.append(f"    mov %rax, {mangled_name}+8(%rip)")
+                self.text.append(f"    pop %rax")          # cap
+                self.text.append(f"    mov %rax, {mangled_name}+16(%rip)")
+            else:
+                # Generic: copy sizeof(ty) bytes from stack to global
+                sz = self.sizeof(ty)
+                self.text.append(f"    lea {mangled_name}(%rip), %rdi")
+                self.text.append(f"    mov %rsp, %rsi")
+                self.text.append(f"    mov ${sz}, %rdx")
+                self.text.append("    call memcpy@PLT")
+                self.text.append(f"    add ${sz}, %rsp")
+
+        self.text.append("    leave")
+        self.text.append("    ret")
+
+        # Restore state
+        saved_text.extend(init_text)
+        self.text = saved_text
+        self.local_vars = saved_local_vars
+        self.local_var_offset = saved_local_var_offset
+        self.current_func_ret_ty = saved_func_ret_ty
+
     def gen_func(self, node):
         _, ty, name, params, body = node
         self.local_vars = {}
@@ -763,8 +824,13 @@ __c5_str_replace:
                 int_idx += 1
                 self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
             
+        # Call global initializer at the very start of main
+        if name == 'main' and self.global_array_inits:
+            self.text.append("    call __c5_global_init")
+
         for stmt in body:
             self.gen_stmt(stmt)
+
             
         # Only add default return if no return statement was generated
         if not self.func_has_return:
@@ -1774,6 +1840,9 @@ __c5_str_replace:
             return "unknown"
         elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access', 'namespace_access'):
             addr, ty = self.get_lvalue(node)
+            # Strip const qualifier so float/array/struct checks work for const globals
+            if ty.startswith('const '):
+                ty = ty[6:]
             sz = self.sizeof(ty)
             # For struct types, return the address as a pointer
             if ty in self.structs:
