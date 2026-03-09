@@ -44,6 +44,21 @@ def lex(code):
         ('COLONCOLON',r'::'),
         ('COLON',     r':'),
         ('HASH',      r'#'),
+        # Compound assignment operators (must come before simple operators)
+        ('PLUS_ASSIGN',   r'\+='),
+        ('MINUS_ASSIGN',  r'-='),
+        ('MUL_ASSIGN',    r'\*='),
+        ('DIV_ASSIGN',    r'/='),
+        ('MOD_ASSIGN',    r'%='),
+        ('LSHIFT_ASSIGN', r'<<='),
+        ('RSHIFT_ASSIGN', r'>>='),
+        ('AND_ASSIGN',    r'&='),
+        ('OR_ASSIGN',     r'\|='),
+        ('XOR_ASSIGN',    r'\^='),
+        # Increment/Decrement operators (must come before +/-)
+        ('INCREMENT',     r'\+\+'),
+        ('DECREMENT',     r'--'),
+        # Shift operators
         ('LSHIFT',    r'<<'),     # Left shift
         ('LAND',      r'&&'),     # Logical AND
         ('LOR',       r'\|\|'),   # Logical OR
@@ -68,11 +83,12 @@ def lex(code):
         ('ARROW',     r'->'),
         ('LBRACKET',  r'\['),
         ('RBRACKET',  r'\]'),
+        # Simple operators (must come after compound and multi-char operators)
         ('PLUS',      r'\+'),
-        ('MINUS',      r'-'),
-        ('MUL',        r'\*'),
-        ('DIV',        r'/'),
-        ('MOD',        r'%'),
+        ('MINUS',     r'-'),
+        ('MUL',       r'\*'),
+        ('DIV',       r'/'),
+        ('MOD',       r'%'),
         ('AMP',       r'\&'),
         ('NUMBER',    r'\d+'),
         ('CHAR',      r"'(?:\\.|[^'\\])'"),

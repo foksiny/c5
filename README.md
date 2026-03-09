@@ -393,13 +393,68 @@ The `break` statement terminates the execution of the innermost enclosing loop (
 
 ```c
 for (int i = 0; i < 10; i = i + 1) {
-if (i == 5) {
-    break;  // Exit the loop when i reaches 5
-}
+    if (i == 5) {
+        break;  // Exit the loop when i reaches 5
+    }
 }
 ```
 
 **Note:** `break` is only allowed inside loops or a switch. Using `break` elsewhere will cause a compile-time error.
+
+#### Compound Assignment Operators
+
+C5 supports compound assignment operators that combine an arithmetic, bitwise, or shift operation with assignment:
+
+- `+=` (addition assignment)
+- `-=` (subtraction assignment)
+- `*=` (multiplication assignment)
+- `/=` (division assignment)
+- `%=` (modulo assignment)
+- `&=` (bitwise AND assignment)
+- `|=` (bitwise OR assignment)
+- `^=` (bitwise XOR assignment)
+- `<<=` (left shift assignment)
+- `>>=` (right shift assignment)
+
+These operators modify the variable in place by performing the operation and storing the result back into the left-hand operand.
+
+Example:
+
+```c
+include <std.c5h>
+
+void main() {
+    int<32> a = 10;
+    a += 5;   // a is now 15
+    a *= 2;   // a is now 30
+    a >>= 2;  // a is now 7
+    std::printf("a = %d\n", a);
+}
+```
+
+#### Increment and Decrement Operators
+
+C5 supports prefix and postfix increment (`++`) and decrement (`--`) operators:
+
+- `++a` (prefix increment): increments `a` and returns the new value.
+- `a++` (postfix increment): returns the old value of `a`, then increments it.
+- `--a` (prefix decrement): decrements `a` and returns the new value.
+- `a--` (postfix decrement): returns the old value of `a`, then decrements it.
+
+These operators work on integer types and pointers. For pointers, increment/decrement adjusts by the size of the pointed-to type.
+
+Example:
+
+```c
+include <std.c5h>
+
+void main() {
+    int<32> x = 10;
+    int<32> y = ++x;  // x = 11, y = 11
+    int<32> z = x++;  // z = 11, x = 12
+    std::printf("x=%d, y=%d, z=%d\n", x, y, z);
+}
+```
 
 ### 5. Directives & Namespacing
 When you `include <std.c5h>`, all functions inside are placed in the `std::` namespace.
@@ -705,6 +760,144 @@ type Value {
 ```
 
 The `Value` type can store an integer, a floating-point number, or a string. The size of the union is the size of its largest member (plus any alignment padding).
+
+**Key characteristics:**
+- **Memory Layout**: The union allocates enough memory to hold its largest member. All members share the same memory location.
+- **Type Safety**: The compiler allows assignment of any member type to a union variable, and allows a union to be assigned to any of its member types (with explicit cast).
+- **No Active Tag**: C5 unions are "untagged" - the language does not track which member is currently active. It is the programmer's responsibility to keep track and use the correct type when accessing the value.
+
+#### Union Casting and Type Access
+
+To access a specific member of a union, you must explicitly cast the union variable to the desired member type:
+
+```c
+include <std.c5h>
+
+type Value {
+    int,
+    float,
+    string
+};
+
+void main() {
+    Value v;
+    
+    // Store an integer
+    v = 10;
+    
+    // Read as integer (requires cast)
+    int i = (int)v;
+    std::printf("i = %d\n", i);
+    
+    // Store a float
+    v = 3.14;
+    
+    // Read as float (requires cast)
+    float f = (float)v;
+    std::printf("f = %f\n", f);
+    
+    // Store a string
+    v = "hello";
+    
+    // Read as string (requires cast)
+    string s = (string)v;
+    std::printf("s = %s\n", s);
+}
+```
+
+**Important:** When passing a union to a function (including variadic functions like `printf`), you must cast it to the expected type to ensure correct register usage and interpretation:
+
+```c
+Value v = 42;
+std::printf("Value: %d\n", (int)v);  // Cast to int for %d
+
+v = 3.14;
+std::printf("Value: %f\n", (float)v);  // Cast to float for %f
+```
+
+#### Unions in Arrays and Structs
+
+Unions can be used as element types in arrays and as fields in structs, enabling flexible data structures:
+
+```c
+include <std.c5h>
+
+type Value {
+    int,
+    float,
+    string
+};
+
+void main() {
+    // Array of unions
+    array<Value> values;
+    values.push(10);
+    values.push(3.14);
+    values.push("hello");
+    
+    // Iterate and cast each element appropriately
+    foreach (i, val in values) {
+        // Determine which type to use based on index (example)
+        if (i == 0) {
+            std::printf("int: %d\n", (int)val);
+        } else if (i == 1) {
+            std::printf("float: %f\n", (float)val);
+        } else {
+            std::printf("string: %s\n", (string)val);
+        }
+    }
+    
+    // Pop and cast
+    Value v = values.pop();
+    string s = (string)v;
+    std::printf("Popped string: %s\n", s);
+}
+```
+
+Unions can also be nested inside structs:
+
+```c
+struct Container {
+    Value data;
+    int<32> count;
+};
+
+void main() {
+    Container c;
+    c.data = 100;
+    c.count = 1;
+    
+    // Access union field with cast
+    int<32> x = (int)c.data;
+    std::printf("x = %d\n", x);
+}
+```
+
+#### Function Parameters and Returns
+
+Unions can be passed as function arguments and returned from functions. The same casting rules apply when you need to treat the union as a specific member type:
+
+```c
+type Value {
+    int,
+    float
+};
+
+Value get_value(Value v) {
+    return v;  // Union-to-union assignment is allowed
+}
+
+void main() {
+    Value v = 10;
+    Value result = get_value(v);
+    
+    // Cast to extract the integer
+    int i = (int)result;
+    std::printf("Result: %d\n", i);
+}
+```
+
+**Note on Calling Conventions**: Unions are passed by value (copied) when used as function arguments or return values. For unions of size ≤ 8 bytes, the value is passed in integer registers (`%rax`, `%rdi`, etc.). For larger unions, a pointer to a copy is passed instead.
 
 #### Using Type Definitions
 

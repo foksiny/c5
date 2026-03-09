@@ -28,11 +28,11 @@
   '("include" "libinclude" "let" "const" "macro" "type" "fnct"
     "if" "else" "switch" "case" "default"
     "while" "do" "for" "foreach" "in" "break"
-    "return" "try" "catch")
+    "return" "try" "catch" "struct" "enum" "signed" "unsigned")
   "Keywords for C5.")
 
 (defvar c5-types
-  '("void" "int" "float" "char" "string" "array" "signed" "unsigned")
+  '("void" "int" "float" "char" "string" "array")
   "Built-in types for C5.")
 
 (defvar c5-font-lock-keywords
@@ -45,30 +45,26 @@
    (cons (regexp-opt c5-keywords 'words) font-lock-keyword-face)
    ;; Built-in types
    (cons (regexp-opt c5-types 'words) font-lock-type-face)
-   ;; Parameterized types (simple ones like int<32>)
-   '("\\<\\(int\\|float\\)<[0-9]+>" . font-lock-type-face)
-   ;; Structs, Enums and Type definitions
-   '("\\<\\(struct\\|enum\\|type\\)\\>\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)"
-     (1 font-lock-keyword-face)
-     (2 font-lock-type-face))
+   ;; Parameterized types (e.g., int<32>, array<int>, array<array<int>>)
+   '("\\<[a-zA-Z_][a-zA-Z0-9_]*<[^>]+>" . font-lock-type-face)
    ;; Namespace resolution (e.g., std::printf)
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)::\\([a-zA-Z0-9_]*\\)"
      (1 font-lock-constant-face)
      (2 font-lock-function-name-face))
-   ;; Function definitions (with return type, possibly generic)
-   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*[*]*\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
+   ;; Function definitions (with return type, possibly generic/pointer)
+   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*\\*?\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
      (1 font-lock-type-face)
      (2 font-lock-function-name-face))
-   ;; Generic type components (highlight the < and > separately if possible, or just the whole thing)
-   '("<\\|>" . font-lock-comment-delimiter-face)
-   ;; Pointers and member access
-   '("->\\|\\." . font-lock-comment-delimiter-face)
    ;; Function calls (not definition)
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
      (1 font-lock-function-name-face))
    ;; Constants (integers and floats)
-   '("\\<[0-9]+\\(?:\\.[0-9]+\\)?\\>" . font-lock-constant-face)
-   '("\\<0x[0-9a-fA-F]+\\>" . font-lock-constant-face))
+   '("\\<[0-9]+\\(?:\\.[0-9]+\\)?\\(?:[eE][+-]?[0-9]+\\)?\\>" . font-lock-constant-face)
+   '("\\<0x[0-9a-fA-F]+\\>" . font-lock-constant-face)
+   ;; Operators and member access
+   '("->\\|\\.\\|::" . font-lock-keyword-face)
+   '("\\+\\+\\|--\\|\\+=\\|-=\\|\\*=\\|/=\\|%=\\|<<=\\|>>=\\|&=\\||=\\|\\^=\\|==\\|!=\\|<=\\|>=\\|&&\\|||\\|<<\\|>>\\|\\.\\.\\." . font-lock-comment-delimiter-face)
+   )
   "Font-lock keywords for `c5-mode'.")
 
 ;;;###autoload

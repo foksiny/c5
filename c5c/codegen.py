@@ -110,12 +110,24 @@ class CodeGen:
         if ty.endswith('*'): return False
         return ty in self.structs or ty.startswith('array<') or ty in self.types or (not ty.startswith('float') and self.sizeof(ty) > 8)
 
+    def is_lvalue(self, node):
+        """Check if a node represents an lvalue (can take address)."""
+        if not node or not isinstance(node, tuple):
+            return False
+        tag = node[0]
+        if tag in ('id', 'namespace_access', 'member_access', 'arrow_access', 'array_access'):
+            return True
+        if tag == 'unary' and node[1] == '*':
+            return True
+        return False
+
     def _returns_by_stack(self, ty):
         """Determine if a type is returned via a hidden pointer on the stack."""
         if not ty: return False
         if ty.endswith('*'): return False
-        if ty in self.structs: return True
-        if ty in self.types: return True
+        if ty in self.structs or ty in self.types:
+            # Return by stack only if size > 16 bytes
+            return self.sizeof(ty) > 16
         if ty.startswith('array<'): return False # Arrays return in rax/rdx/rcx
         return not ty.startswith('float') and self.sizeof(ty) > 16
 
@@ -1667,6 +1679,17 @@ __c5_str_replace:
             dst_ty = target_type
             if src_ty == dst_ty:
                 return src_ty
+            # Union to member cast: reinterpret union value as member type
+            if src_ty in self.types:
+                for mem_ty in self.types[src_ty]:
+                    if mem_ty == dst_ty:
+                        # If destination is a float, need to move bits from %rax to %xmm0
+                        if dst_ty.startswith('float'):
+                            if dst_ty == 'float<32>':
+                                self.text.append("    movd %eax, %xmm0")
+                            else:
+                                self.text.append("    movq %rax, %xmm0")
+                        return dst_ty
             # Integer-like conversions (integer or pointer)
             if self._is_integer_like(src_ty) and self._is_integer_like(dst_ty):
                 src_sz = self.sizeof(src_ty)
@@ -1838,6 +1861,187 @@ __c5_str_replace:
                 self.text.append("    movzbq %al, %rax")
                 return 'int'
             return "unknown"
+        elif node[0] == 'compound_assign':
+            left, op, right = node[1], node[2], node[3]
+            loc = node[4] if len(node) > 4 else (1,0)
+            # Get lvalue address of left
+            addr, ty_l = self.get_lvalue(left)
+            # Save address if it uses volatile registers
+            addr_on_stack = False
+            if any(reg in addr for reg in ['(%rax)', '(%r10)', '(%r11)']):
+                self.text.append(f"    lea {addr}, %r10")
+                self.text.append("    push %r10")
+                addr_on_stack = True
+                addr = "(%r10)"  # after pop, will be in r10
+            # Evaluate right expression
+            ty_r = self.gen_expr(right)  # result in %rax or %xmm0
+            # Save right value
+            if self._is_float(ty_r):
+                self.text.append("    sub $8, %rsp")
+                if ty_r == 'float<32>':
+                    self.text.append("    movss %xmm0, (%rsp)")
+                else:
+                    self.text.append("    movsd %xmm0, (%rsp)")
+            else:
+                self.text.append("    push %rax")
+            # If address was saved on stack, pop it into %r10
+            if addr_on_stack:
+                self.text.append("    pop %r10")
+                addr = "(%r10)"
+            # Load old value from address
+            if self._is_float(ty_l):
+                if ty_l == 'float<32>':
+                    self.text.append(f"    movss {addr}, %xmm0")
+                else:
+                    self.text.append(f"    movsd {addr}, %xmm0")
+            else:
+                sz = self.sizeof(ty_l)
+                if sz == 1: self.text.append(f"    movb {addr}, %al")
+                elif sz == 2: self.text.append(f"    movw {addr}, %ax")
+                elif sz == 4: self.text.append(f"    movl {addr}, %eax")
+                else: self.text.append(f"    mov {addr}, %rax")
+            # Restore right value and perform operation
+            if self._is_float(ty_r):
+                # Load right into %xmm1
+                if ty_r == 'float<32>':
+                    self.text.append("    movss (%rsp), %xmm1")
+                else:
+                    self.text.append("    movsd (%rsp), %xmm1")
+                self.text.append("    add $8, %rsp")
+                # Float operations
+                if op == '+':
+                    if ty_l == 'float<32>' or ty_r == 'float<32>':
+                        self.text.append("    addss %xmm1, %xmm0")
+                    else:
+                        self.text.append("    addsd %xmm1, %xmm0")
+                elif op == '-':
+                    if ty_l == 'float<32>' or ty_r == 'float<32>':
+                        self.text.append("    subss %xmm1, %xmm0")
+                    else:
+                        self.text.append("    subsd %xmm1, %xmm0")
+                elif op == '*':
+                    if ty_l == 'float<32>' or ty_r == 'float<32>':
+                        self.text.append("    mulss %xmm1, %xmm0")
+                    else:
+                        self.text.append("    mulsd %xmm1, %xmm0")
+                elif op == '/':
+                    if ty_l == 'float<32>' or ty_r == 'float<32>':
+                        self.text.append("    divss %xmm1, %xmm0")
+                    else:
+                        self.text.append("    divsd %xmm1, %xmm0")
+                else:
+                    raise Exception(f"Unsupported compound assignment operator {op} for float")
+            else:
+                # Integer operation: right value is on stack, pop into %rcx
+                self.text.append("    pop %rcx")
+                # Perform operation with old in %rax, right in %rcx
+                if op == '+':
+                    self.text.append("    add %rcx, %rax")
+                elif op == '-':
+                    self.text.append("    sub %rcx, %rax")
+                elif op == '*':
+                    self.text.append("    imul %rcx, %rax")
+                elif op == '/':
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    xor %rdx, %rdx")
+                        self.text.append("    div %rcx")
+                    else:
+                        self.text.append("    cqto")
+                        self.text.append("    idiv %rcx")
+                elif op == '%':
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    xor %rdx, %rdx")
+                        self.text.append("    div %rcx")
+                        self.text.append("    mov %rdx, %rax")
+                    else:
+                        self.text.append("    cqto")
+                        self.text.append("    idiv %rcx")
+                        self.text.append("    mov %rdx, %rax")
+                elif op == '&':
+                    self.text.append("    and %rcx, %rax")
+                elif op == '|':
+                    self.text.append("    or %rcx, %rax")
+                elif op == '^':
+                    self.text.append("    xor %rcx, %rax")
+                elif op == '<<':
+                    self.text.append("    mov %cl, %cl")  # ensure shift count in %cl
+                    self.text.append("    shl %cl, %rax")
+                elif op == '>>':
+                    if ty_l.startswith('unsigned '):
+                        self.text.append("    shr %cl, %rax")
+                    else:
+                        self.text.append("    sar %cl, %rax")
+                else:
+                    raise Exception(f"Unsupported compound assignment operator {op}")
+            # Store result back to address
+            if self._is_float(ty_l):
+                if ty_l == 'float<32>':
+                    self.text.append(f"    movss %xmm0, {addr}")
+                else:
+                    self.text.append(f"    movsd %xmm0, {addr}")
+            else:
+                sz = self.sizeof(ty_l)
+                if sz == 1: self.text.append(f"    movb %al, {addr}")
+                elif sz == 2: self.text.append(f"    movw %ax, {addr}")
+                elif sz == 4: self.text.append(f"    movl %eax, {addr}")
+                else: self.text.append(f"    mov %rax, {addr}")
+            return ty_l
+        elif node[0] in ('pre_inc', 'pre_dec', 'post_inc', 'post_dec'):
+            target = node[1]
+            is_post = node[0].startswith('post_')
+            is_inc = node[0].endswith('_inc')
+            # Get lvalue address
+            addr, ty = self.get_lvalue(target)
+            addr_on_stack = False
+            if any(reg in addr for reg in ['(%rax)', '(%r10)', '(%r11)']):
+                self.text.append(f"    lea {addr}, %r10")
+                self.text.append("    push %r10")
+                addr_on_stack = True
+                addr = "(%r10)"
+            # Load old value into %rax (for integer/pointer)
+            if ty.endswith('*'):
+                self.text.append(f"    mov {addr}, %rax")
+            else:
+                sz = self.sizeof(ty)
+                if sz == 1: self.text.append(f"    movb {addr}, %al")
+                elif sz == 2: self.text.append(f"    movw {addr}, %ax")
+                elif sz == 4: self.text.append(f"    movl {addr}, %eax")
+                else: self.text.append(f"    mov {addr}, %rax")
+            # If post, save old value
+            if is_post:
+                self.text.append("    push %rax")
+            # Compute new value in %rax
+            if ty.endswith('*'):
+                base_ty = ty[:-1]
+                if base_ty != 'void':
+                    elem_sz = self.sizeof(base_ty)
+                else:
+                    elem_sz = 1  # Should not happen; analyzer rejects void*
+                if is_inc:
+                    self.text.append(f"    add ${elem_sz}, %rax")
+                else:
+                    self.text.append(f"    sub ${elem_sz}, %rax")
+            else:
+                if is_inc:
+                    self.text.append("    add $1, %rax")
+                else:
+                    self.text.append("    sub $1, %rax")
+            # Store new value back
+            if ty.endswith('*'):
+                self.text.append(f"    mov %rax, {addr}")
+            else:
+                sz = self.sizeof(ty)
+                if sz == 1: self.text.append(f"    movb %al, {addr}")
+                elif sz == 2: self.text.append(f"    movw %ax, {addr}")
+                elif sz == 4: self.text.append(f"    movl %eax, {addr}")
+                else: self.text.append(f"    mov %rax, {addr}")
+            # Restore old value for post
+            if is_post:
+                self.text.append("    pop %rax")
+            # Pop saved address register if any
+            if addr_on_stack:
+                self.text.append("    pop %r10")
+            return ty
         elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access', 'namespace_access'):
             addr, ty = self.get_lvalue(node)
             # Strip const qualifier so float/array/struct checks work for const globals
@@ -1947,26 +2151,44 @@ __c5_str_replace:
                 return ty_l
             
             if self._is_aggregate(ty_l):
-                # Aggregate assignment or function return
                 ty_r = self.gen_expr(right)
-                if addr_on_stack: self.text.append("    pop %rdi")
-                else: self.text.append(f"    lea {addr}, %rdi")
-                
-                # Check if ty_r is a value on stack or a pointer
-                if self._returns_by_stack(ty_r):
-                    # Result is on top of stack (from a function call)
-                    self.text.append("    mov %rsp, %rsi")
-                    self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
-                    self.text.append("    call memcpy@PLT")
-                    # Clean up the stack temporary
-                    st_sz = self.sizeof(ty_l)
-                    if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
-                    self.text.append(f"    add ${st_sz}, %rsp")
+                if addr_on_stack:
+                    self.text.append("    pop %rdi")
+                    dest = "(%rdi)"
                 else:
-                    # Result is a pointer in rax
-                    self.text.append("    mov %rax, %rsi")
+                    self.text.append(f"    lea {addr}, %rdi")
+                    dest = "(%rdi)"
+                # Determine if we need memcpy
+                need_memcpy = False
+                src_reg = None
+                if ty_r.endswith('*') and self._is_aggregate(ty_r[:-1]):
+                    need_memcpy = True
+                    src_reg = '%rax'
+                elif self._is_aggregate(ty_r) and self._returns_by_stack(ty_r):
+                    need_memcpy = True
+                    src_reg = '%rax'
+                if need_memcpy:
+                    self.text.append(f"    mov {src_reg}, %rsi")
                     self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
                     self.text.append("    call memcpy@PLT")
+                    if self._is_aggregate(ty_r) and self._returns_by_stack(ty_r):
+                        # Clean up stack temporary allocated for function return
+                        st_sz = self.sizeof(ty_l)
+                        if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
+                        self.text.append(f"    add ${st_sz}, %rsp")
+                else:
+                    # Direct store
+                    if self._is_float(ty_r):
+                        if ty_r == 'float<32>':
+                            self.text.append("    movss %xmm0, (%rdi)")
+                        else:
+                            self.text.append("    movsd %xmm0, (%rdi)")
+                    else:
+                        sz = self.sizeof(ty_r)
+                        if sz == 1: self.text.append("    mov %al, (%rdi)")
+                        elif sz == 2: self.text.append("    mov %ax, (%rdi)")
+                        elif sz == 4: self.text.append("    mov %eax, (%rdi)")
+                        else: self.text.append("    mov %rax, (%rdi)")
                 return ty_l
             
             ty_r = self.gen_expr(right)
@@ -1974,18 +2196,36 @@ __c5_str_replace:
                 self.text.append("    pop %r10")
                 addr = "(%r10)"
             if self._is_float(ty_l):
+                # If right-hand side is a union, reinterpret bits from %rax to %xmm0
+                if ty_r in self.types:
+                    if ty_l == 'float<32>':
+                        self.text.append("    movd %eax, %xmm0")
+                    else:
+                        self.text.append("    movq %rax, %xmm0")
+                else:
+                    # Normal float conversions
+                    if ty_l == 'float<32>':
+                        if ty_r == 'float' or ty_r == 'float<64>': self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                    else:
+                        if ty_r == 'float<32>': self.text.append("    cvtss2sd %xmm0, %xmm0")
+                # Store to memory
                 if ty_l == 'float<32>':
-                    if ty_r == 'float' or ty_r == 'float<64>': self.text.append("    cvtsd2ss %xmm0, %xmm0")
                     self.text.append(f"    movss %xmm0, {addr}")
                 else:
-                    if ty_r == 'float<32>': self.text.append("    cvtss2sd %xmm0, %xmm0")
                     self.text.append(f"    movsd %xmm0, {addr}")
             else:
-                sz = self.sizeof(ty_l)
-                if sz == 1: self.text.append(f"    mov %al, {addr}")
-                elif sz == 2: self.text.append(f"    mov %ax, {addr}")
-                elif sz == 4: self.text.append(f"    mov %eax, {addr}")
-                else: self.text.append(f"    mov %rax, {addr}")
+                # For aggregates (structs/unions), if the right-hand side is a float, store from XMM
+                if self._is_float(ty_r):
+                    if ty_r == 'float<32>':
+                        self.text.append(f"    movss %xmm0, {addr}")
+                    else:
+                        self.text.append(f"    movsd %xmm0, {addr}")
+                else:
+                    sz = self.sizeof(ty_l)
+                    if sz == 1: self.text.append(f"    mov %al, {addr}")
+                    elif sz == 2: self.text.append(f"    mov %ax, {addr}")
+                    elif sz == 4: self.text.append(f"    mov %eax, {addr}")
+                    else: self.text.append(f"    mov %rax, {addr}")
             return ty_l
 
         elif node[0] == 'binop':
@@ -2277,22 +2517,52 @@ __c5_str_replace:
                     if method == 'push':
                         # For struct types, we need special handling
                         is_struct = elem_ty in self.structs or (elem_ty and elem_ty.startswith('array<')) or (elem_ty and elem_ty in self.types) or self.sizeof(elem_ty) > 8
+                        push_temp_size = 0  # track temporary allocation for cleanup
                         
                         if is_struct:
-                            # For structs, get the source address and use memcpy
+                            # Determine how to provide source data for the element
                             if args[0][0] == 'init_list':
                                 self._gen_init_list_recursive(args[0], elem_ty)
                                 self.text.append("    mov %rsp, %r11")
-                                self.text.append("    push %r11") # save src addr
-                            else:
-                                # Push from variable: get address of source struct
+                                self.text.append("    push %r11")  # save src addr
+                                push_temp_size = self.sizeof(elem_ty)
+                            elif self.is_lvalue(args[0]):
+                                # Lvalue: get its address
                                 src_addr, src_ty = self.get_lvalue(args[0])
                                 if '(%rbp)' in src_addr:
                                     src_off = int(src_addr.split('(')[0])
                                     self.text.append(f"    lea {src_off}(%rbp), %r11")
                                 else:
                                     self.text.append(f"    lea {src_addr}, %r11")
-                                self.text.append("    push %r11")  # save src addr
+                                self.text.append("    push %r11")
+                                push_temp_size = 0
+                            else:
+                                # Rvalue expression: evaluate and materialize into a temporary buffer
+                                ty_arg = self.gen_expr(args[0])
+                                # Check if the result is a pointer to an aggregate (e.g., from function returning large struct)
+                                if self._is_aggregate(ty_arg) and self._returns_by_stack(ty_arg):
+                                    # Result pointer in %rax
+                                    self.text.append("    push %rax")
+                                    push_temp_size = 0
+                                else:
+                                    # Allocate temporary buffer of size elem_sz
+                                    self.text.append(f"    sub ${elem_sz}, %rsp")
+                                    # Store the value into the buffer
+                                    if self._is_float(ty_arg):
+                                        if ty_arg == 'float<32>':
+                                            self.text.append("    movss %xmm0, (%rsp)")
+                                        else:
+                                            self.text.append("    movsd %xmm0, (%rsp)")
+                                    else:
+                                        sz = self.sizeof(ty_arg)
+                                        if sz == 1: self.text.append("    mov %al, (%rsp)")
+                                        elif sz == 2: self.text.append("    mov %ax, (%rsp)")
+                                        elif sz == 4: self.text.append("    mov %eax, (%rsp)")
+                                        else: self.text.append("    mov %rax, (%rsp)")
+                                    # Push address of buffer
+                                    self.text.append("    lea (%rsp), %r11")
+                                    self.text.append("    push %r11")
+                                    push_temp_size = elem_sz
                         else:
                             # For primitive/enum types, evaluate and save value
                             self.gen_expr(args[0])
@@ -2337,9 +2607,8 @@ __c5_str_replace:
                             self.text.append("    sub $8, %rsp")
                             self.text.append("    call memcpy@PLT")
                             self.text.append("    add $8, %rsp")
-                            if args[0][0] == 'init_list':
-                                # Restore stack after temp struct
-                                self.text.append(f"    add ${self.sizeof(elem_ty)}, %rsp")
+                            if push_temp_size:
+                                self.text.append(f"    add ${push_temp_size}, %rsp")
                         else:
                             self.text.append("    pop %rax")  # restore value
                             self.text.append(f"    mov {arr_ref(0)}, %rcx")  # data ptr
@@ -2360,7 +2629,8 @@ __c5_str_replace:
                     
                     elif method == 'pop':
                         # Decrement length, return data[new_len]
-                        is_struct = elem_ty in self.structs or (elem_ty and elem_ty.startswith('array<')) or (elem_ty and elem_ty in self.types) or self.sizeof(elem_ty) > 8
+                        # For pop, we return by value if element size <= 8, else by pointer (to a copy)
+                        is_struct = self.sizeof(elem_ty) > 8
                         self.text.append(f"    decq {arr_ref(8)}")
                         self.text.append(f"    mov {arr_ref(8)}, %r10") # new len
                         self.text.append(f"    mov {arr_ref(0)}, %rcx")   # data ptr

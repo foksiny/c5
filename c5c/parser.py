@@ -558,10 +558,30 @@ class Parser:
     def parse_expr(self):
         loc = self._loc()
         left = self.parse_logical_or()
-        if self.peek().type == 'ASSIGN':
+        tok = self.peek()
+        if tok.type == 'ASSIGN':
             self.consume('ASSIGN')
             right = self.parse_expr()
             return ('assign', left, right, loc)
+        elif tok.type in ('PLUS_ASSIGN', 'MINUS_ASSIGN', 'MUL_ASSIGN', 'DIV_ASSIGN', 'MOD_ASSIGN',
+                          'LSHIFT_ASSIGN', 'RSHIFT_ASSIGN', 'AND_ASSIGN', 'OR_ASSIGN', 'XOR_ASSIGN'):
+            # Map compound assignment token to base operator
+            op_map = {
+                'PLUS_ASSIGN': '+',
+                'MINUS_ASSIGN': '-',
+                'MUL_ASSIGN': '*',
+                'DIV_ASSIGN': '/',
+                'MOD_ASSIGN': '%',
+                'LSHIFT_ASSIGN': '<<',
+                'RSHIFT_ASSIGN': '>>',
+                'AND_ASSIGN': '&',
+                'OR_ASSIGN': '|',
+                'XOR_ASSIGN': '^',
+            }
+            token_type = tok.type
+            self.consume()  # consume compound assign token
+            right = self.parse_expr()
+            return ('compound_assign', left, op_map[token_type], right, loc)
         return left
 
     def parse_logical_or(self):
@@ -692,10 +712,14 @@ class Parser:
                 pass
             # Not a cast, rollback to before '('
             self.pos = saved_pos
-        # Handle unary operators
-        if self.peek().type in ('BANG', 'TILDE', 'MUL', 'AMP', 'PLUS', 'MINUS'):
+        # Handle unary operators (including prefix ++/--)
+        if self.peek().type in ('BANG', 'TILDE', 'MUL', 'AMP', 'PLUS', 'MINUS', 'INCREMENT', 'DECREMENT'):
             op = self.consume().value
             target = self.parse_unary()
+            if op == '++':
+                return ('pre_inc', target, loc)
+            elif op == '--':
+                return ('pre_dec', target, loc)
             return ('unary', op, target, loc)
         return self.parse_primary()
 
@@ -790,6 +814,12 @@ class Parser:
                             break
                 self.consume('RPAREN')
                 target = ('call', target, args, loc)
+            elif self.peek().type in ('INCREMENT', 'DECREMENT'):
+                op = self.consume().value
+                if op == '++':
+                    target = ('post_inc', target, loc)
+                else:
+                    target = ('post_dec', target, loc)
             else:
                 break
         return target

@@ -1,7 +1,7 @@
 " Vim syntax file
 " Language: C5
 " Maintainer: Gemini CLI
-" Latest Revision: 2026-03-03
+" Latest Revision: 2026-03-09
 
 if exists("b:current_syntax")
   finish
@@ -21,10 +21,11 @@ syn keyword c5Type void int float char string array signed unsigned
 syn region c5IncludeFile start="\v(include|libinclude)\s+\zs\<" end="\v\>"
 
 " Parameterized Types (e.g., int<32>, float<64>, array<array<T>>)
-syn region c5ParameterizedType start="\v(int|float|array)\<" end="\v\>" contains=c5ParameterizedType,c5Type,c5Number,c5Operator,c5Namespace
+syn region c5ParameterizedType start="\v[a-zA-Z_][a-zA-Z0-9_]*\<" end="\v\>" contains=c5ParameterizedType,c5Type,c5Number,c5Operator,c5Namespace
 
 " Namespaces and Operators
 syn match c5Namespace "\v[a-zA-Z_][a-zA-Z0-9_]*::"
+syn match c5Operator "\v\.\.\."
 syn match c5Operator "\v-\>"
 syn match c5Operator "\v\."
 syn match c5Operator "\v\+\=|\-\=|\*\=|\/\=|\%\=|\&\=|\^=|\|\=|\<\<\=|\>\>\="
@@ -35,7 +36,8 @@ syn match c5Operator "\v\<\="
 syn match c5Operator "\v\>\="
 syn match c5Operator "\v\&\&"
 syn match c5Operator "\v\|\|"
-syn match c5Operator "\v[\+\-\*\/\%\=\!\<\>\&\|\^\~\?]"
+syn match c5Operator "\v\<\<|\>\>"
+syn match c5Operator "\v[\+\-\*\/\%\=\!\<\>\&\|\^\~\.]"
 
 " Functions
 syn match c5Function "\v[a-zA-Z_][a-zA-Z0-9_]*\s*\ze\("

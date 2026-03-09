@@ -1,0 +1,59 @@
+include <std.c5h>
+
+type Value {
+    int,
+    float,
+    string
+};
+
+Value get_value(Value v) {
+    return v;
+}
+
+void main() {
+    Value v;
+    v = 10;
+    
+    std::printf("v: %d\n", (int)v);
+
+    v = 10.5;
+
+    std::printf("v: %f\n", (float)v);
+
+    v = "hello";
+
+    std::printf("v: %s\n", (string)v);
+
+
+    array<Value> vs;
+
+    vs.push(10);
+    vs.push(10.5);
+    vs.push("hello");
+
+    foreach (i, vl in vs) {
+        if (i == 0) {
+            std::printf("vs[%d]: %d\n", i, (int)vl);
+        } else if (i == 1) {
+            std::printf("vs[%d]: %f\n", i, (float)vl);
+        } else {
+            std::printf("vs[%d]: %s\n", i, (string)vl);
+        }
+    }
+
+    string msg = (string)vs.pop();
+
+    std::printf("msg: %s\n", msg);
+
+    float fval = (float)vs.pop();
+
+    std::printf("fval: %f\n", fval);
+
+    int val = (int)vs.pop();
+
+    std::printf("val: %d\n", val);
+
+    Value myval = get_value(10);
+
+    std::printf("myval: %d\n", myval);
+}

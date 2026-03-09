@@ -439,6 +439,9 @@ class SemanticAnalyzer:
 
     def _types_compatible(self, target_type, source_type):
         """Check if source_type can be assigned to target_type."""
+        # Fast path: identical types are compatible
+        if target_type == source_type:
+            return True
         # If target is a union type, check if source matches any member
         if target_type in self.types:
             for mem_type in self.types[target_type]:
@@ -677,6 +680,93 @@ class SemanticAnalyzer:
                         if var_type.startswith('const '):
                             self.add_error("E042", f"'{name}' is const and cannot be modified", loc)
                         break
+
+        elif tag == 'compound_assign':
+            left, op, right = node[1], node[2], node[3]
+            # Analyze left operand (lvalue)
+            self._analyze_node(left)
+            l_ty = self._get_type(left)
+            # Check left is a valid lvalue
+            if left[0] not in ('id', 'member_access', 'arrow_access', 'array_access'):
+                self.add_error("E019", "Left side of compound assignment is not an lvalue", loc)
+            # Check const
+            if left[0] == 'id':
+                name = left[1]
+                for scope in self.scopes:
+                    if name in scope:
+                        var_type = scope[name]
+                        if var_type.startswith('const '):
+                            self.add_error("E042", f"'{name}' is const and cannot be modified", loc)
+                        break
+            # Analyze right operand
+            self._analyze_node(right)
+            r_ty = self._get_type(right)
+            # Type checking: right must be compatible with left type
+            if right[0] == 'number' and isinstance(right[1], int):
+                self._check_int_literal_against_type(l_ty, right[1], loc)
+            elif right[0] == 'float':
+                self._check_float_literal_against_type(l_ty, right[1], loc)
+            else:
+                if not self._types_compatible(l_ty, r_ty):
+                    self.add_error("E002", f"Cannot assign {r_ty} to {l_ty} in compound assignment", loc)
+            # Operator validity based on types
+            if op in ('+', '-', '*', '/', '%'):
+                # Arithmetic operators: both operands must be numeric (int/float) or pointer+int for +/-.
+                if op in ('+', '-'):
+                    if l_ty.endswith('*'):
+                        # Pointer arithmetic: right must be integer
+                        if not self._is_integer_type(r_ty):
+                            self.add_error("E002", f"Pointer arithmetic requires integer operand, got {r_ty}", loc)
+                    else:
+                        # Numeric left
+                        if not (self._is_integer_type(l_ty) or self._is_float_type(l_ty)):
+                            self.add_error("E002", f"Operator '{op}' requires numeric or pointer left operand", loc)
+                        if not (self._is_integer_type(r_ty) or self._is_float_type(r_ty)):
+                            self.add_error("E002", f"Operator '{op}' requires integer or float right operand", loc)
+                else:
+                    # *, /, % require numeric operands (no pointers)
+                    if not (self._is_integer_type(l_ty) or self._is_float_type(l_ty)):
+                        self.add_error("E002", f"Operator '{op}' requires numeric operand", loc)
+                    if not (self._is_integer_type(r_ty) or self._is_float_type(r_ty)):
+                        self.add_error("E002", f"Operator '{op}' requires numeric operand", loc)
+            elif op in ('&', '|', '^', '<<', '>>'):
+                # Bitwise and shift operators require integer-like operands (including pointers? but typically integer)
+                if not self._is_register_type(l_ty):
+                    self.add_error("E002", f"Operator '{op}' requires integer-like left operand", loc)
+                if not self._is_register_type(r_ty):
+                    self.add_error("E002", f"Operator '{op}' requires integer-like right operand", loc)
+                # Shift count validation for constant right operand
+                if op in ('<<', '>>') and right[0] == 'number' and isinstance(right[1], int):
+                    shift = right[1]
+                    if shift < 0:
+                        self.add_error("E002", f"Shift count {shift} is negative", loc)
+                    else:
+                        bits = self._get_integer_bits(l_ty)
+                        if bits is not None and shift >= bits:
+                            self.add_error("E002", f"Shift count {shift} >= type width {bits}", loc)
+            else:
+                self.add_error("E999", f"Unsupported compound assignment operator '{op}'", loc)
+
+        elif tag in ('pre_inc', 'pre_dec', 'post_inc', 'post_dec'):
+            # Increment/decrement operators
+            target = node[1]
+            self._analyze_node(target)
+            ty = self._get_type(target)
+            # Check target is a valid lvalue
+            if target[0] not in ('id', 'member_access', 'arrow_access', 'array_access'):
+                self.add_error("E019", "Increment/decrement target is not an lvalue", loc)
+            # Check const
+            if target[0] == 'id':
+                name = target[1]
+                for scope in self.scopes:
+                    if name in scope:
+                        var_type = scope[name]
+                        if var_type.startswith('const '):
+                            self.add_error("E042", f"'{name}' is const and cannot be modified", loc)
+                        break
+            # Check type: must be integer or pointer (not float, struct, etc.)
+            if not (self._is_integer_type(ty) or ty.endswith('*')):
+                self.add_error("E002", f"Operand of increment/decrement must be integer or pointer type, not {ty}", loc)
 
         elif tag == 'binop':
             op, left, right = node[1], node[2], node[3]
