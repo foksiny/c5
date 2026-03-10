@@ -16,6 +16,7 @@ syn keyword c5Repeat while do for foreach in break
 syn keyword c5Statement return try catch
 syn keyword c5Structure struct enum
 syn keyword c5Type void int float char string array signed unsigned
+syn keyword c5Constant NULL
 
 " Include files
 syn region c5IncludeFile start="\v(include|libinclude)\s+\zs\<" end="\v\>"
@@ -41,6 +42,13 @@ syn match c5Operator "\v[\+\-\*\/\%\=\!\<\>\&\|\^\~\.]"
 
 " Functions
 syn match c5Function "\v[a-zA-Z_][a-zA-Z0-9_]*\s*\ze\("
+
+" C-style array definitions: match variable name before '['
+syn match c5VariableName "\v\<[a-zA-Z_][a-zA-Z0-9_]*\>\ze\["
+
+" Brackets for array indexing/definition
+syn match c5Operator "\["
+syn match c5Operator "\]"
 
 " Numbers
 syn match c5Number "\v<\d+>"

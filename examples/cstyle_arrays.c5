@@ -1,0 +1,9 @@
+include <std.c5h>
+
+void main() {
+    char cstr[100] = "hello";
+    int  intlist[4] = {1, 2, 3, 4};
+
+    std::printf("%s\n", cstr);
+    std::printf("%d\n", intlist[0]);
+}

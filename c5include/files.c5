@@ -1,0 +1,36 @@
+include <std.c5h>
+include <bool.c5h>
+
+void writef(string filename, string mode, string text) {
+    void* file = std::fopen(filename, mode);
+
+    std::fprintf(file, text);
+
+    std::fclose(file);
+}
+
+string readf(string filename) {
+    void* file = std::fopen(filename, "r");
+    char line[500];
+
+    string final = "";
+
+    while (std::fgets(line, sizeof(line), file) != NULL) {
+        final = final + (string)line;
+    }
+
+    std::fclose(file);
+
+    return final;
+}
+
+bool::Bool existf(string filename) {
+    void* file = std::fopen(filename, "r");
+
+    if (file == NULL) {
+        return bool::false;
+    }
+
+    std::fclose(file);
+    return bool::true;
+}

@@ -162,6 +162,7 @@ class SemanticAnalyzer:
         if tag == 'float': return "float"
         if tag == 'string': return "string"
         if tag == 'char': return "char"
+        if tag == 'null': return "void*"
         if tag == 'id':
             name = node[1]
             for scope in reversed(self.scopes):
@@ -174,6 +175,8 @@ class SemanticAnalyzer:
         if tag == 'cast':
             # ('cast', target_type, operand, loc)
             return node[1]  # The target type of the cast
+        if tag == 'sizeof_type' or tag == 'sizeof_expr':
+            return 'int'
         if tag == 'binop':
             op = node[1]
             left_ty = self._get_type(node[2])
@@ -349,6 +352,47 @@ class SemanticAnalyzer:
                 return None
         return None
 
+    def _is_fixed_array_type(self, ty):
+        """Check if a type is a fixed-size array (e.g., int[10])."""
+        # Exclude dynamic array<T>
+        return '[' in ty and ty.endswith(']') and not ty.startswith('array<')
+
+    def _parse_fixed_array_type(self, ty):
+        """Parse a fixed array type and return (element_type, count) for the outermost dimension."""
+        if '[' not in ty or not ty.endswith(']'):
+            return (ty, None)
+        idx = ty.find('[')
+        close_idx = ty.find(']', idx)
+        if idx == -1 or close_idx == -1:
+            return (ty, None)
+        count_str = ty[idx+1:close_idx]
+        if not count_str.isdigit():
+            return (ty, None)
+        count = int(count_str)
+        elem_type = ty[:idx] + ty[close_idx+1:]
+        return (elem_type, count)
+
+    def _get_fixed_array_element_type(self, ty):
+        """Get the element type of a fixed array, handling multi-dimensional arrays."""
+        if not self._is_fixed_array_type(ty):
+            return ty
+        elem_ty, count = self._parse_fixed_array_type(ty)
+        return elem_ty
+
+    def _strip_outermost_array_dim(self, ty):
+        """Remove the outermost array dimension from a type string (e.g., int[4][5] -> int[5])."""
+        if '[' not in ty or not ty.endswith(']'):
+            return ty
+        idx = ty.find('[')
+        close_idx = ty.find(']', idx)
+        if idx == -1 or close_idx == -1:
+            return ty
+        # Ensure the content between brackets is all digits
+        between = ty[idx+1:close_idx]
+        if not between.isdigit():
+            return ty
+        return ty[:idx] + ty[close_idx+1:]
+
     def _sizeof(self, ty):
         """Calculate the size of a type in bytes, or None if unknown/too large."""
         # Strip const modifier
@@ -361,6 +405,15 @@ class SemanticAnalyzer:
         # Pointer types (including void*)
         if base_ty.endswith('*'):
             return 8
+        # Fixed-size array: type[N] - use recursive method
+        if '[' in base_ty and base_ty.endswith(']'):
+            elem_ty, count = self._parse_fixed_array_type(base_ty)
+            if count is None or elem_ty is None:
+                return None
+            elem_size = self._sizeof(elem_ty)
+            if elem_size is None:
+                return None
+            return count * elem_size
         if base_ty == 'fnptr':
             return 8
         # Basic types
@@ -441,6 +494,11 @@ class SemanticAnalyzer:
         """Check if source_type can be assigned to target_type."""
         # Fast path: identical types are compatible
         if target_type == source_type:
+            return True
+        # Special case: void* is compatible with any pointer type (and vice versa)
+        if source_type == 'void*' and target_type.endswith('*'):
+            return True
+        if target_type == 'void*' and source_type.endswith('*'):
             return True
         # If target is a union type, check if source matches any member
         if target_type in self.types:
@@ -599,7 +657,11 @@ class SemanticAnalyzer:
                 if init[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
                     delattr(self, 'lambda_ret_type')
 
-                if init[0] == 'init_list':
+                # Special case: string literal initializing a char array (C-style)
+                if init[0] == 'string' and (ty == 'char' or self._is_fixed_array_type(ty) and self._get_fixed_array_element_type(ty) == 'char'):
+                    # OK - string literal can initialize char array
+                    pass
+                elif init[0] == 'init_list':
                     # Struct or array initializer
                     if ty in self.structs:
                         fields = self.structs[ty]  # list of (field_type, field_name)
@@ -618,7 +680,23 @@ class SemanticAnalyzer:
                                 elem_type = self._get_type(elem)
                                 if not self._types_compatible(field_type, elem_type):
                                     self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
-                    # TODO: array initializer type checking
+                    # Fixed-size array initializer
+                    elif self._is_fixed_array_type(ty):
+                        elem_ty = self._get_fixed_array_element_type(ty)
+                        elements = init[1]
+                        # Get the actual count from the type
+                        _, count = self._parse_fixed_array_type(ty)
+                        if len(elements) > count:
+                            self.add_error("E015", f"too many initializers for array {ty}", loc)
+                        for i, elem in enumerate(elements):
+                            if elem[0] == 'number' and isinstance(elem[1], int):
+                                self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                            elif elem[0] == 'float':
+                                self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                            else:
+                                elem_type = self._get_type(elem)
+                                if not self._types_compatible(elem_ty, elem_type):
+                                    self.add_error("E002", f"Cannot initialize array element of type {elem_ty} with {elem_type}", loc)
                 elif init[0] == 'lambda':
                     # Lambda initializer: skip type check (the variable's type is the lambda's return type)
                     # The lambda body will be analyzed separately.
@@ -800,7 +878,21 @@ class SemanticAnalyzer:
             if op in ('~', '!'):
                 if not self._is_register_type(ty):
                     self.add_error("E002", f"Operator '{op}' requires integer-like operand", loc)
-        
+
+        elif tag == 'sizeof_type':
+            # ('sizeof_type', type_string, loc)
+            ty = node[1]
+            # The size is computed at compile time - nothing to analyze for the type itself
+            # Type of sizeof is 'int' (or we can use a runtime constant)
+            return ('sizeof_type', ty, loc)
+
+        elif tag == 'sizeof_expr':
+            # ('sizeof_expr', expr, loc)
+            expr = node[1]  # The expression is always at index 1
+            self._analyze_node(expr)
+            # Type of sizeof is 'int'
+            return ('sizeof_expr', expr, loc)
+
         elif tag == 'cast':
             # ('cast', target_type, operand, loc)
             target_type, operand = node[1], node[2]

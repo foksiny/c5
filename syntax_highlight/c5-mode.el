@@ -31,6 +31,10 @@
     "return" "try" "catch" "struct" "enum" "signed" "unsigned")
   "Keywords for C5.")
 
+(defvar c5-constants
+  '("NULL")
+  "Constants for C5.")
+
 (defvar c5-types
   '("void" "int" "float" "char" "string" "array")
   "Built-in types for C5.")
@@ -43,8 +47,14 @@
    '("#[a-zA-Z_]+" . font-lock-preprocessor-face)
    ;; Keywords
    (cons (regexp-opt c5-keywords 'words) font-lock-keyword-face)
+   ;; Constants (NULL, etc.)
+   (cons (regexp-opt c5-constants 'words) font-lock-constant-face)
    ;; Built-in types
    (cons (regexp-opt c5-types 'words) font-lock-type-face)
+   ;; C-style array definitions: type name[size] or type name[size] = {...}
+   '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s*\\[[^]]+\\]"
+     (1 font-lock-type-face)
+     (2 font-lock-variable-name-face))
    ;; Parameterized types (e.g., int<32>, array<int>, array<array<int>>)
    '("\\<[a-zA-Z_][a-zA-Z0-9_]*<[^>]+>" . font-lock-type-face)
    ;; Namespace resolution (e.g., std::printf)

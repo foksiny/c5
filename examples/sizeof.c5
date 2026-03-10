@@ -1,0 +1,31 @@
+include <std.c5h>
+
+struct Point {
+    int<32> x;
+    int<32> y;
+};
+
+void main() {
+    array<int<32>> nums;
+
+    nums.push(10);
+    nums.push(20);
+    nums.push(30);
+
+    int<32> a = 10;
+
+    string b = "hello";
+
+    char* c = c_str("hello");
+
+    float<32> d[5] = {1.5, 2.5, 3.5, 4.5, 5.5};
+
+    Point e = {1, 2};
+
+    std::printf("sizeof(nums): %d\n", sizeof(nums));
+    std::printf("sizeof(a): %d\n", sizeof(a));
+    std::printf("sizeof(b): %d\n", sizeof(b));
+    std::printf("sizeof(c): %d\n", sizeof(c));
+    std::printf("sizeof(d): %d\n", sizeof(d));
+    std::printf("sizeof(e): %d\n", sizeof(e));
+}

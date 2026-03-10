@@ -595,7 +595,190 @@ array<int<32>> append_value(array<int<32>> arr) {
 }
 ```
 
-### 10. Matrix Support
+### 10. C-Style Fixed-Size Arrays
+C5 supports C-style fixed-size arrays with stack allocation and compile-time size checking. These arrays are declared with the syntax `type name[size]` and can be initialized with initializer lists or string literals (for char arrays).
+
+#### Syntax and Declaration
+
+```c
+include <std.c5h>
+
+void main() {
+    // Fixed-size integer array with initializer list
+    int<32> intlist[4] = {1, 2, 3, 4};
+    
+    // Char array (C string) initialized with string literal
+    char cstr[100] = "hello";
+    
+    // Zero-initialized array (no initializer)
+    double values[10];
+}
+```
+
+**Key characteristics:**
+- **Stack allocation**: Fixed-size arrays are allocated on the stack (unless global).
+- **Compile-time size**: The size must be a constant integer literal.
+- **Type encoding**: The array size is part of the type (e.g., `int[4]`).
+- **No length tracking**: Unlike `array<T>`, fixed-size arrays do not store their length; you must track it manually.
+- **Element access**: Use the `[]` operator to access elements by index.
+- **Bounds checking**: The compiler does **not** insert automatic bounds checks; out-of-bounds access leads to undefined behavior (may cause runtime exceptions via memory protection).
+
+#### Initialization
+
+Fixed-size arrays support several initialization forms:
+
+**Initializer lists:**
+```c
+int<32> nums[5] = {10, 20, 30};  // First 3 elements set, rest zero-initialized
+char str[20] = "hello";          // String literal copies bytes including null terminator
+```
+
+**Zero initialization:**
+```c
+int<32> buffer[256];  // All elements are automatically zero-initialized
+```
+
+For arrays with fewer initializer elements than the array size, the remaining elements are zero-initialized.
+
+#### Access and Assignment
+
+Array elements are accessed using the subscript operator `[]`:
+
+```c
+include <std.c5h>
+
+void main() {
+    int<32> data[5] = {1, 2, 3, 4, 5};
+    
+    // Read an element
+    int<32> first = data[0];
+    std::printf("First: %d\n", first);
+    
+    // Write an element
+    data[2] = 42;
+    data[4] = data[1] + data[3];
+}
+```
+
+**Important notes:**
+- The array name **decays** to a pointer to its first element in most expressions (e.g., when passed to functions).
+- Unlike `array<T>`, fixed-size arrays do not have methods like `push`, `pop`, or `length`. The size is fixed and must be managed manually.
+- When used as a function parameter, a fixed-size array `T[N]` is adjusted to `T*` (pointer to element type).
+
+#### Multi-Dimensional Arrays
+
+Fixed-size arrays can be nested to create multi-dimensional arrays:
+
+```c
+include <std.c5h>
+
+void main() {
+    // 2D integer matrix (3 rows, 4 columns)
+    int<32> matrix[3][4] = {
+        {1, 2, 3, 4},
+        {5, 6, 7, 8},
+        {9, 10, 11, 12}
+    };
+    
+    // Access element at row 1, column 2
+    int<32> val = matrix[1][2];  // 7
+    
+    // 3D array
+    double cube[2][3][4];
+}
+```
+
+Multi-dimensional arrays are stored in row-major order. The total size is the product of all dimension sizes multiplied by the element size.
+
+#### Interaction with Pointers
+
+Fixed-size arrays work seamlessly with pointers:
+
+```c
+include <std.c5h>
+
+void main() {
+    int<32> arr[5] = {10, 20, 30, 40, 50};
+    int<32>* ptr = arr;  // Array decays to pointer to first element
+    
+    // Pointer arithmetic
+    ptr = ptr + 2;       // Points to arr[2]
+    std::printf("%d\n", *ptr);  // 30
+}
+```
+
+You can also use the address-of operator `&` to get a pointer to an array element or the whole array:
+
+```c
+int<32>* p1 = &arr[0];    // Pointer to first element
+int<32>* p2 = arr;        // Equivalent (array decays)
+```
+
+#### Global Fixed-Size Arrays
+
+Fixed-size arrays can be declared at global scope with `let`:
+
+```c
+let char greeting[20] = "Hello, world!";
+let int<32> lookup_table[256] = {0};
+
+void main() {
+    std::printf("%s\n", greeting);
+}
+```
+
+Global arrays are stored in the `.data` section and are zero-initialized if no initializer is provided.
+
+#### Comparison with `array<T>`
+
+| Feature | Fixed-size `T[N]` | Dynamic `array<T>` |
+| :--- | :--- | :--- |
+| **Allocation** | Stack (or global data segment) | Heap |
+| **Size** | Fixed at compile time | Dynamic, can grow/shrink |
+| **Length tracking** | No (manual) | Yes (`length()` method) |
+| **Methods** | None (raw array) | `push`, `pop`, `clear`, `length` |
+| **Memory layout** | Contiguous block | Header (ptr, len, cap) + heap data |
+| **Use case** | Small, known-size collections | Dynamic collections that change size |
+| **Performance** | No overhead, direct access | Some overhead for bounds checks and resizing |
+
+#### Type Representation
+
+The type of a fixed-size array is represented internally as a string like `"int[4]"` or `"char[100]"`. The element type and count are encoded in the type string.
+
+**Example type introspection in code generation:**
+- `sizeof("int[4]")` returns `4 * sizeof(int)` = 32 bytes (on 64-bit: 4 * 8 = 32).
+- The element type is extracted by stripping the brackets: `"int[4]"` → `"int"`.
+
+#### Limitations and Security Concerns
+
+- **No bounds checking**: Accessing `arr[index]` with `index >= size` or `index < 0` is undefined. The compiler does not insert runtime checks.
+- **No resizing**: Once declared, the array size cannot be changed.
+- **No copy semantics**: Assigning one array to another (`a = b`) is not allowed because arrays are not assignable. Use `memcpy` or element-wise copy.
+- **Cannot be returned by value**: Functions cannot return a fixed-size array type directly. Return a pointer or use `array<T>` instead.
+- **Size must be constant**: The array size must be an integer literal; variables or expressions are not allowed.
+
+#### Passing to Functions
+
+When a fixed-size array is passed as a function parameter, it automatically decays to a pointer to its element type:
+
+```c
+void process(int<32>* data, int<32> count) {
+    for (int<32> i = 0; i < count; i = i + 1) {
+        data[i] = data[i] * 2;
+    }
+}
+
+void main() {
+    int<32> nums[5] = {1, 2, 3, 4, 5};
+    process(nums, 5);  // nums decays to int<32>*
+}
+```
+
+You can also explicitly use pointer types in the parameter declaration to make the intent clear.
+
+---
+
+### 11. Matrix Support
 C5 supports multi-dimensional arrays (matrices) of any type, including structs, enums, unions, and even other arrays. Matrices are represented as nested `array<array<T>>` types and can be nested to any depth.
 
 ```c
@@ -634,7 +817,7 @@ void main() {
 - **Heap Allocation**: Like regular arrays, matrices manage their memory on the heap.
 - **Full Type Compatibility**: Supports matrices of any C5 type, including nested aggregates.
 
-### 11. Pointers & Memory
+### 12. Pointers & Memory
 C5 provides full access to memory with C-like syntax.
 ```c
 include <std.c5h>
@@ -651,7 +834,7 @@ void main() {
 }
 ```
 
-### 12. Public Variables (Globals)
+### 13. Public Variables (Globals)
 Use the `let` keyword at the top level to declare global variables.
 ```c
 let int<32> counter = 0;
@@ -662,7 +845,7 @@ void main() {
 }
 ```
 
-### 13. Macros
+### 14. Macros
 C5 supports simple macros that are expanded at compile time. Macros are defined using the `macro` keyword and work like inline functions.
 
 ```c
@@ -685,7 +868,7 @@ void main() {
 - **Zero overhead**: Macros are expanded at compile time, no runtime cost
 - **Type flexibility**: Macros work with any compatible types
 
-### 14. Lambda Expressions
+### 15. Lambda Expressions
 C5 supports lambda expressions (anonymous functions) that can be assigned to variables and called like regular functions.
 
 ```c
@@ -731,7 +914,7 @@ void main() {
 }
 ```
 
-### 15. Type Definitions
+### 16. Type Definitions
 
 C5 supports user-defined type aliases and union-like types using the `type` keyword. This allows you to create a new type that can hold values of any of the specified underlying types.
 
@@ -924,41 +1107,61 @@ Type definitions are global and must be declared before use. They are stored in 
 - **Computed Sizes**: The size of a union type is automatically computed as the maximum size of its members.
 - **Recursive Members**: You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
 
-### 16. Type Width Checking
+### 17. Sizeof Operator
 
-C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
+C5 provides the `sizeof` operator to query the size of a type or an expression at compile time. The operator has two forms:
 
-#### Integer Width Checking
+#### sizeof(type)
 
-When assigning an integer literal to a variable with a specific integer width (e.g., `int<8>`, `unsigned int<16>`), the compiler verifies that the value lies within the representable range. If the value is too large or too small, an error is raised (E023).
+Returns the size in bytes of a type. The type must be a valid C5 type (built-in, struct, union, or array).
 
 ```c
 include <std.c5h>
 
 void main() {
-    int<8> x = 300;  // Error: value 300 exceeds int<8> range (-128..127)
-    unsigned int<8> y = 256;  // Error: value 256 exceeds unsigned int<8> range (0..255)
+    int<32> x;
+    std::printf("sizeof(int<32>) = %d\n", sizeof(int<32>));  // 4
+    std::printf("sizeof(char) = %d\n", sizeof(char));        // 1
+    std::printf("sizeof(float<64>) = %d\n", sizeof(float)); // 8
 }
 ```
 
-The ranges are calculated based on the signedness and bit width:
-- Signed `int<N>`: -(2^(N-1)) to 2^(N-1)-1
-- Unsigned `int<N>`: 0 to 2^N - 1
+#### sizeof(expression)
 
-#### Floating-Point Width Checking
-
-Similarly, assigning a 64-bit float literal to a `float<32>` variable triggers a warning (W006) because it may lose precision. The language defaults to `float` as 64-bit.
+Returns the size in bytes of the type of the given expression. The expression is analyzed at compile time and its resulting type determines the size.
 
 ```c
-float<32> a = 3.14;  // Warning: possible data loss from float64 to float32
-float<64> b = 3.14;  // OK
+include <std.c5h>
+
+struct Point {
+    int<32> x;
+    int<32> y;
+};
+
+void main() {
+    Point p = {1, 2};
+    int<32> arr[10];
+    
+    std::printf("sizeof(p) = %d\n", sizeof(p));     // 8 (two int<32>)
+    std::printf("sizeof(arr) = %d\n", sizeof(arr)); // 40 (10 * sizeof(int<32>))
+}
 ```
 
-These checks help prevent accidental overflow and data loss.
+**Important:** When `sizeof` is applied to an expression, any variables or identifiers within that expression are considered "used" for dead code analysis. This prevents false warnings about variables that appear unused but are actually referenced in `sizeof`:
+
+```c
+void main() {
+    int<32> value = 42;
+    std::printf("Size: %d\n", sizeof(value));  // 'value' is marked as used, no warning
+}
+```
+
+Without this behavior, the analyzer would incorrectly warn that `value` is dead code because it only appears in `sizeof`.
+
+**Note:** `sizeof` is evaluated entirely at compile time and does not generate any runtime code to compute the size. The size is embedded as an immediate constant in the generated assembly.
 
 ---
-
-### 17. Exception Handling
+### 18. Exception Handling
 
 C5 supports exception handling through `try-catch` blocks, allowing you to handle runtime errors gracefully.
 
@@ -998,7 +1201,41 @@ void main() {
 
 ---
 
-### 18. Operators
+### 19. Type Width Checking
+
+C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
+
+#### Integer Width Checking
+
+When assigning an integer literal to a variable with a specific integer width (e.g., `int<8>`, `unsigned int<16>`), the compiler verifies that the value lies within the representable range. If the value is too large or too small, an error is raised (E023).
+
+```c
+include <std.c5h>
+
+void main() {
+    int<8> x = 300;  // Error: value 300 exceeds int<8> range (-128..127)
+    unsigned int<8> y = 256;  // Error: value 256 exceeds unsigned int<8> range (0..255)
+}
+```
+
+The ranges are calculated based on the signedness and bit width:
+- Signed `int<N>`: -(2^(N-1)) to 2^(N-1)-1
+- Unsigned `int<N>`: 0 to 2^N - 1
+
+#### Floating-Point Width Checking
+
+Similarly, assigning a 64-bit float literal to a `float<32>` variable triggers a warning (W006) because it may lose precision. The language defaults to `float` as 64-bit.
+
+```c
+float<32> a = 3.14;  // Warning: possible data loss from float64 to float32
+float<64> b = 3.14;  // OK
+```
+
+These checks help prevent accidental overflow and data loss.
+
+---
+
+### 20. Operators
 
 C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, and comparison operations. All operators follow C-like precedence and associativity.
 
@@ -1080,7 +1317,7 @@ void main() {
 }
 ```
 
-### 19. Type Conversions (Casts)
+### 21. Type Conversions (Casts)
 
 C5 supports explicit type conversions (casts) using the syntax `(target_type) expression`. Casts allow you to convert a value from one type to another, overriding the compiler's default type checking.
 

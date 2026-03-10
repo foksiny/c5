@@ -71,6 +71,15 @@ class CodeGen:
             if max_size == 0:
                 max_size = 1
             return max_size
+        # Fixed-size array: type[N]
+        if self._is_fixed_array_type(ty):
+            elem_ty, count = self._parse_fixed_array_type(ty)
+            if count is None or elem_ty is None:
+                return 8  # fallback
+            elem_size = self.sizeof(elem_ty)
+            if elem_size is None:
+                return 8
+            return count * elem_size
         return 8
 
     # Helper methods for type properties
@@ -136,9 +145,37 @@ class CodeGen:
         if not ty: return False
         return ty.startswith('float')
 
+    def _is_fixed_array_type(self, ty):
+        """Check if a type is a fixed-size array (e.g., int[10])."""
+        return '[' in ty and ty.endswith(']') and not ty.startswith('array<')
+
+    def _parse_fixed_array_type(self, ty):
+        """Parse a fixed array type and return (element_type, count) for the outermost dimension."""
+        if '[' not in ty or not ty.endswith(']'):
+            return (ty, None)
+        idx = ty.find('[')
+        close_idx = ty.find(']', idx)
+        if idx == -1 or close_idx == -1:
+            return (ty, None)
+        count_str = ty[idx+1:close_idx]
+        if not count_str.isdigit():
+            return (ty, None)
+        count = int(count_str)
+        elem_type = ty[:idx] + ty[close_idx+1:]
+        return (elem_type, count)
+
+    def _get_fixed_array_element_type(self, ty):
+        """Get the element type of a fixed array, handling multi-dimensional arrays."""
+        if not self._is_fixed_array_type(ty):
+            return ty
+        elem_ty, count = self._parse_fixed_array_type(ty)
+        return elem_ty
+
     def array_elem_type(self, ty):
         if ty.startswith('array<') and ty.endswith('>'):
             return ty[6:-1]
+        if self._is_fixed_array_type(ty):
+            return self._get_fixed_array_element_type(ty)
         return None
 
     def array_elem_size(self, ty):
@@ -166,6 +203,10 @@ class CodeGen:
             return 'string'
         if tag == 'char':
             return 'char'
+        if tag == 'null':
+            return 'void*'
+        if tag == 'sizeof_type' or tag == 'sizeof_expr':
+            return 'int'
         if tag == 'id':
             name = node[1]
             if name in self.local_vars:
@@ -389,6 +430,30 @@ class CodeGen:
                 self.text.append("    add %rax, %r11")
                 return "(%r11)", elem_ty
             
+            # Handle fixed-size arrays: base is the array itself, not a pointer to data
+            if self._is_fixed_array_type(base_ty):
+                # Get element size and array count
+                elem_ty = self._get_fixed_array_element_type(base_ty)
+                elem_sz = self.sizeof(elem_ty)
+                # Compute address of array start
+                if '(%rbp)' in base_addr:
+                    base_off = int(base_addr.split('(')[0])
+                    self.text.append(f"    lea {base_off}(%rbp), %r11")
+                elif '(%rip)' in base_addr:
+                    # Global array: use RIP-relative LEA
+                    self.text.append(f"    lea {base_addr}, %r11")
+                else:
+                    # Already a memory address? Possibly from other expression; use lea if not immediate
+                    self.text.append(f"    lea {base_addr}, %r11")
+                # Evaluate index
+                self.text.append("    push %r11")
+                self.gen_expr(node[2])  # index in %rax
+                self.text.append("    pop %r11")
+                # Compute address: base + index*elem_sz
+                self.text.append(f"    imul ${elem_sz}, %rax")
+                self.text.append("    add %rax, %r11")
+                return "(%r11)", elem_ty
+
             elem_sz = self.sizeof(elem_ty) if elem_ty else 8
             # Load data pointer
             if '(%rbp)' in base_addr:
@@ -912,6 +977,38 @@ __c5_str_replace:
                     self.text.append(f"    mov ${sz}, %rdx")
                     self.text.append("    call memcpy@PLT")
                     self.text.append(f"    add ${sz}, %rsp") # pop temp
+                elif self._is_fixed_array_type(ty) and init_expr[0] == 'string':
+                    # Special case: char array initialized with string literal
+                    # Copy string bytes including null terminator, zero the rest
+                    elem_ty = self._get_fixed_array_element_type(ty)
+                    if elem_ty == 'char':
+                        # Get string length
+                        str_val = init_expr[1]
+                        str_len = len(str_val)
+                        # Get array total size in bytes
+                        array_sz = self.sizeof(ty)
+                        # Copy string bytes one by one
+                        for i, ch in enumerate(str_val):
+                            if i < array_sz:
+                                self.text.append(f"    movb ${ord(ch)}, {self.local_var_offset+i}(%rbp)")
+                        # Null-terminate if there's space
+                        if str_len < array_sz:
+                            self.text.append(f"    movb $0, {self.local_var_offset+str_len}(%rbp)")
+                        # Zero remaining bytes if any
+                        if str_len + 1 < array_sz:
+                            zero_start = str_len + 1
+                            # Zero in 8-byte chunks where possible
+                            for i in range(zero_start, array_sz, 8):
+                                chunk_end = min(i + 8, array_sz)
+                                chunk_sz = chunk_end - i
+                                if chunk_sz == 8:
+                                    self.text.append(f"    movq $0, {self.local_var_offset+i}(%rbp)")
+                                elif chunk_sz == 4:
+                                    self.text.append(f"    movl $0, {self.local_var_offset+i}(%rbp)")
+                                elif chunk_sz == 2:
+                                    self.text.append(f"    movw $0, {self.local_var_offset+i}(%rbp)")
+                                else:
+                                    self.text.append(f"    movb $0, {self.local_var_offset+i}(%rbp)")
                 else:
                     ret_ty = self.gen_expr(init_expr)
                     if ret_ty:
@@ -1577,6 +1674,9 @@ __c5_str_replace:
         elif node[0] == 'char':
             self.text.append(f"    mov ${node[1]}, %rax")
             return "char"
+        elif node[0] == 'null':
+            self.text.append("    xor %rax, %rax")
+            return "void*"
         elif node[0] == 'string':
             label = self.get_string_label(node[1])
             self.text.append(f"    lea {label}(%rip), %rax")
@@ -1586,6 +1686,22 @@ __c5_str_replace:
             val = self.enums[base][name]
             self.text.append(f"    mov ${val}, %rax")
             return "int"
+        elif node[0] == 'sizeof_type':
+            # ('sizeof_type', type_string, loc)
+            ty = node[1]
+            sz = self.sizeof(ty)
+            self.text.append(f"    mov ${sz}, %rax")
+            return 'int'
+        
+        elif node[0] == 'sizeof_expr':
+            # ('sizeof_expr', expr, loc)
+            expr = node[1]
+            # Evaluate expression to get its type (but we don't need the value)
+            ty = self._get_expr_type(expr)
+            sz = self.sizeof(ty)
+            self.text.append(f"    mov ${sz}, %rax")
+            return 'int'
+        
         elif node[0] == 'lambda':
             # Lambda expression: generate a unique function and return its address
             params, body = node[1], node[2]
@@ -1805,6 +1921,13 @@ __c5_str_replace:
                 self.text.append("    mov (%rsp), %rax")  # return buffer pointer
                 self.text.append("    add $16, %rsp")  # deallocate stack space
                 return 'string'
+            # char* to string (or const variants)
+            src_clean = src_ty[6:] if src_ty.startswith('const ') else src_ty
+            dst_clean = dst_ty[6:] if dst_ty.startswith('const ') else dst_ty
+            if src_clean == 'char*' and dst_clean == 'string':
+                return dst_ty
+            if src_clean == 'string' and dst_clean == 'char*':
+                return dst_ty
             # If none of the above, unsupported
             raise Exception(f"Unsupported cast from {src_ty} to {dst_ty}")
         elif node[0] == 'unary':
@@ -2048,6 +2171,22 @@ __c5_str_replace:
             if ty.startswith('const '):
                 ty = ty[6:]
             sz = self.sizeof(ty)
+            # For fixed-size arrays, decay to pointer to element type
+            if self._is_fixed_array_type(ty):
+                # Compute address of array (already in addr) and return pointer to element
+                if '(%r11)' in addr:
+                    off = int(addr.split('(')[0]) if addr.split('(')[0] else 0
+                    self.text.append(f"    lea {off}(%r11), %rax")
+                elif '(%rbp)' in addr:
+                    off = int(addr.split('(')[0])
+                    self.text.append(f"    lea {off}(%rbp), %rax")
+                elif '(%rax)' in addr:
+                    off = int(addr.split('(')[0]) if addr.split('(')[0] else 0
+                    self.text.append(f"    lea {off}(%rax), %rax")
+                else:
+                    self.text.append(f"    lea {addr}, %rax")
+                elem_ty = self._get_fixed_array_element_type(ty)
+                return elem_ty + '*'
             # For struct types, return the address as a pointer
             if ty in self.structs:
                 if '(%r11)' in addr:

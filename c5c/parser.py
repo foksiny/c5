@@ -46,6 +46,14 @@ class Parser:
         self.consume('LET')
         ty = self.parse_type()
         name = self.consume('ID').value
+        # Parse any array brackets (C-style fixed-size arrays)
+        while self.peek().type == 'LBRACKET':
+            self.consume('LBRACKET')
+            if self.peek().type != 'NUMBER':
+                raise SyntaxError(f"Expected integer literal for array size at line {self.peek().line}")
+            size_val = self.consume('NUMBER').value
+            self.consume('RBRACKET')
+            ty = f"{ty}[{size_val}]"
         if self.peek().type == 'SEMI':
             # No initializer - zero initialization
             self.consume('SEMI')
@@ -521,6 +529,14 @@ class Parser:
         if is_decl:
             ty = self.parse_type()
             name = self.consume('ID').value
+            # Parse any array brackets (C-style fixed-size arrays)
+            while self.peek().type == 'LBRACKET':
+                self.consume('LBRACKET')
+                if self.peek().type != 'NUMBER':
+                    raise SyntaxError(f"Expected integer literal for array size at line {self.peek().line}")
+                size_val = self.consume('NUMBER').value
+                self.consume('RBRACKET')
+                ty = f"{ty}[{size_val}]"
             if self.peek().type == 'SEMI':
                 self.consume('SEMI')
                 return ('var_decl', ty, name, None, loc)
@@ -689,6 +705,43 @@ class Parser:
 
     def parse_unary(self):
         loc = self._loc()
+        # Check for sizeof
+        if self.peek().type == 'SIZEOF':
+            self.consume('SIZEOF')
+            # sizeof requires parentheses
+            if self.peek().type != 'LPAREN':
+                raise SyntaxError(f"Expected '(' after sizeof at line {self.peek().line}")
+            self.consume('LPAREN')
+            # Determine if we're sizing a type or an expression
+            saved_pos = self.pos
+            try:
+                ty = self.parse_type()
+                # Check if followed by RPAREN - if so, it's a candidate for type
+                if self.peek().type == 'RPAREN':
+                    # Disambiguate: if ty is a simple identifier not in type_names, treat as expression.
+                    is_simple_ident = ty.isidentifier() and not any(c in ty for c in ' <>*&')
+                    if is_simple_ident and ty not in self.type_names:
+                        # Not a known type; rollback and parse as expression
+                        self.pos = saved_pos
+                        expr = self.parse_expr()
+                        if self.peek().type != 'RPAREN':
+                            raise SyntaxError(f"Expected ')' after sizeof expression at line {self.peek().line}")
+                        self.consume('RPAREN')
+                        return ('sizeof_expr', expr, loc)
+                    else:
+                        # It's a valid type
+                        self.consume('RPAREN')
+                        return ('sizeof_type', ty, loc)
+                # Not followed by RPAREN, rollback and parse as expression
+                self.pos = saved_pos
+            except SyntaxError:
+                self.pos = saved_pos
+            # Must be an expression
+            expr = self.parse_expr()
+            if self.peek().type != 'RPAREN':
+                raise SyntaxError(f"Expected ')' after sizeof expression at line {self.peek().line}")
+            self.consume('RPAREN')
+            return ('sizeof_expr', expr, loc)
         # Check for cast: (type) unary_expression
         if self.peek().type == 'LPAREN':
             saved_pos = self.pos
@@ -758,6 +811,9 @@ class Parser:
                 body.append(self.parse_stmt())
             self.consume('RBRACE')
             target = ('lambda', params, body, loc)
+        elif self.peek().type == 'NULL':
+            self.consume('NULL')
+            target = ('null', loc)
         elif self.peek().type == 'ID':
             parts = [self.consume('ID').value]
             while self.peek().type == 'COLONCOLON':
