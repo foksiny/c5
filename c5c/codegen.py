@@ -2213,7 +2213,7 @@ __c5_str_replace:
                     if '(' in addr:
                         base = addr.split('(')[1][:-1]
                         off = addr.split('(')[0] if addr.split('(')[0] else "0"
-                        self.text.append(f"    lea {off}(%{base}), %rax")
+                        self.text.append(f"    lea {off}({base}), %rax")
                     else:
                         self.text.append(f"    lea {addr}, %rax")
                 elif '(%rbp)' in addr:
