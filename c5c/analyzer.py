@@ -933,7 +933,7 @@ class SemanticAnalyzer:
 
         elif tag == 'func':
             self.ret_ty_stack.append(node[1])
-            self.scopes.append(dict(self.scopes[0]))
+            self.scopes.append({})
             for pty, pname in node[3]: self.scopes[-1][pname] = pty
             for s in node[4]: self._analyze_node(s)
             curr_scope = self.scopes.pop()
