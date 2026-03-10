@@ -1,5 +1,4 @@
 include <std.c5h>
-include <bool.c5h>
 
 void writef(string filename, string mode, string text) {
     void* file = std::fopen(filename, mode);
@@ -24,13 +23,13 @@ string readf(string filename) {
     return final;
 }
 
-bool::Bool existf(string filename) {
+const unsigned int<1> existf(string filename) {
     void* file = std::fopen(filename, "r");
 
     if (file == NULL) {
-        return bool::false;
+        return 0;
     }
 
     std::fclose(file);
-    return bool::true;
+    return 1;
 }

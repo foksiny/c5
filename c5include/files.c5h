@@ -1,6 +1,5 @@
 libinclude <files.a> #static
-include <bool.c5h>
 
 void writef(string filename, string mode, string text); // write to a file or replace it (based on mode)
 string readf(string filename);                          // read a file
-bool::Bool existf(string filename);                     // check if a file exists
+const unsigned int<1> existf(string filename);          // check if a file exists
