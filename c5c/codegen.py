@@ -32,7 +32,9 @@ class CodeGen:
         self.global_array_inits = []  # List of (mangled_name, ty, init_node) for global arrays
 
     def mangle(self, name):
-        return name.replace('::', '_')
+        if '::' in name:
+            return name.split('::')[-1]
+        return name
 
 
     def sizeof(self, ty):
@@ -807,14 +809,15 @@ __c5_str_replace:
 
     def gen_func(self, node):
         _, ty, name, params, body = node
+        mangled_name = self.mangle(name)
         self.local_vars = {}
         self.local_var_offset = 0
         self.current_func_ret_ty = ty  # Store return type for struct returns
         self.func_has_return = False  # Track if function has a return statement
         
-        self.text.append(f".global {name}")
-        self.text.append(f".type {name}, @function")
-        self.text.append(f"{name}:")
+        self.text.append(f".global {mangled_name}")
+        self.text.append(f".type {mangled_name}, @function")
+        self.text.append(f"{mangled_name}:")
         self.text.append("    push %rbp")
         self.text.append("    mov %rsp, %rbp")
         self.text.append("    sub $528, %rsp") # 512 (locals) + 8 (padding) + 8 (to keep 16 alignment with rbp/ra)
@@ -3405,7 +3408,8 @@ __c5_str_replace:
                 self.text.append(f"    mov {offset}(%rbp), %r11")
                 self.text.append("    call *%r11")
             else:
-                self.text.append(f"    call {func_name}@PLT")
+                mangled_name = self.mangle(full_func_name)
+                self.text.append(f"    call {mangled_name}@PLT")
             
             # For struct returns, the result is in the hidden pointer location (top of stack)
             # Return current stack pointer in rax and the base type (indicating it's on stack)

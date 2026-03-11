@@ -18,6 +18,9 @@ syn keyword c5Structure struct enum
 syn keyword c5Type void int float char string array signed unsigned
 syn keyword c5Constant NULL
 
+" Built-in Methods
+syn match c5Method "\v\.\zs(push|pop|length|insert|insertItems|clear|replace)"
+
 " Include files
 syn region c5IncludeFile start="\v(include|libinclude)\s+\zs\<" end="\v\>"
 
@@ -78,6 +81,7 @@ hi def link c5ParameterizedType Type
 hi def link c5Namespace Identifier
 hi def link c5Operator Operator
 hi def link c5Function Function
+hi def link c5Method Function
 hi def link c5Number Number
 hi def link c5Float Float
 hi def link c5Hex Number

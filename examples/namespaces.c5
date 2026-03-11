@@ -1,0 +1,6 @@
+#namespaces 0; // change to 1 to activate namespaces again.
+include <std.c5h>
+
+void main() {
+    printf("Hello, world!\n");
+}

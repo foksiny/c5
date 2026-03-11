@@ -27,6 +27,10 @@ class Parser:
                 decls.append(self.parse_include())
             elif self.peek().type == 'LIBINCLUDE':
                 decls.append(self.parse_libinclude())
+            elif self.peek().type == 'DETECT':
+                decls.append(self.parse_detect_once())
+            elif self.peek().type == 'HASH':
+                decls.append(self.parse_directive())
             elif self.peek().type == 'STRUCT':
                 decls.append(self.parse_struct_decl())
             elif self.peek().type == 'ENUM':
@@ -40,6 +44,25 @@ class Parser:
             else:
                 decls.append(self.parse_decl())
         return decls
+
+    def parse_directive(self):
+        loc = self._loc()
+        self.consume('HASH')
+        name = self.consume('ID').value
+        # For now, only namespaces is supported
+        if name == 'namespaces':
+            val = int(self.consume('NUMBER').value)
+            self.consume('SEMI')
+            return ('directive', 'namespaces', val, loc)
+        else:
+            raise SyntaxError(f"Unknown directive #{name} at line {loc[0]}")
+
+    def parse_detect_once(self):
+        loc = self._loc()
+        self.consume('DETECT')
+        self.consume('ONCE')
+        self.consume('SEMI')
+        return ('detect_once', loc)
 
     def parse_let_decl(self):
         loc = self._loc()

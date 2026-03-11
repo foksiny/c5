@@ -128,6 +128,70 @@ The `libinclude` directive in the header ensures the correct library is automati
 
 ---
 
+## 🏗️ Build System
+
+C5 includes a simple build system using `.c5b` files to automate the compilation process for larger projects.
+
+### Using the `--build` flag
+
+You can build a project by pointing the compiler to a `.c5b` file or a directory containing a `build.c5b` file:
+
+```bash
+# Build using a specific build file
+c5c --build myproject.c5b
+
+# Build using the build.c5b file in the current directory
+c5c --build .
+
+# Build a project in a subfolder
+c5c --build path/to/project
+```
+
+### Build File Format (`.c5b`)
+
+The build file uses a simple key-value format. Below are the available configuration options:
+
+#### For Programs
+```c5b
+type: "program"
+files:
+    "main.c5"
+    "utils.c5"
+
+outfolder: "bin/"
+outname: "my_app"
+```
+
+#### For Libraries
+```c5b
+type: "library"
+libtype: "static" // Options: static, dynamic
+files:
+    "math.c5"
+
+h_files:
+    "math.c5h"
+
+outfolder: "lib/"
+outname: "math"
+install: "ask" // Options: ask, force, no
+```
+
+### Configuration Options
+
+| Key | Description |
+| :--- | :--- |
+| `type` | Project type: `"program"` or `"library"`. |
+| `libtype` | (Library only) Type of library: `"static"` (.a) or `"dynamic"` (.so). |
+| `files` | List of source files to compile. |
+| `h_files` | (Library only) List of header files to install. |
+| `outfolder` | Target directory for build artifacts. |
+| `outname` | Name of the output file (without extension). |
+| `install` | (Library only) Installation behavior: `"ask"`, `"force"`, or `"no"`. |
+| `noutfolder` | If `1`, the output folder itself won't be copied during installation. |
+
+---
+
 ## 📂 Include Search Order
 When you use `include <file.c5h>`, the compiler searches in this order:
 1. Current directory of the source file.
@@ -172,6 +236,8 @@ The `syntax_highlight/c5-mode.el` file provides a major mode for C5.
 - Syntax highlighting for keywords, types, built-in functions, strings, comments, and numbers
 - Support for C-style comments (`//` and `/* */`)
 - Automatic file association for `.c5` and `.c5h` files
+- Highlighting for built-in methods (`.push()`, `.insert()`, etc.)
+- Support for `#namespaces` directive
 - Basic indentation support
 
 ### Neovim / Vim
@@ -205,7 +271,8 @@ The `syntax_highlight/c5.vim` file provides syntax highlighting for C5.
 - Full syntax highlighting for C5 language constructs
 - Support for parameterized types (`int<32>`, `float<64>`)
 - Highlighting for namespace resolution (`::`) and arrow operator (`->`)
-- Macro definition highlighting
+- Macro and preprocessor directive highlighting (e.g., `#namespaces`)
+- Highlighting for built-in methods (`.length()`, `.insert()`, etc.)
 - Comment and string highlighting with escape sequences
 
 ---
@@ -495,6 +562,19 @@ void main() {
     std::printf("Hello, C5!\n");
 }
 ```
+
+#### Deactivating Namespaces
+You can deactivate automatic namespacing for subsequent includes using the `#namespaces` directive. This is useful if you want to use symbols from a library directly without a prefix.
+
+```c
+#namespaces 0;
+include <std.c5h>
+
+void main() {
+    printf("Hello, C5!\n"); // No std:: prefix needed
+}
+```
+The directive is stateful; use `#namespaces 1;` to re-enable namespacing for further includes.
 
 ### 6. String Power
 Strings in C5 are more than just pointers; they support arithmetic and built-in methods.
@@ -1426,8 +1506,20 @@ C5 supports creating and using libraries through a combination of header files (
 
 A typical C5 library consists of two files:
 
-1. **Header file (`.c5h`)**: Contains function declarations (prototypes)
-2. **Implementation file (`.c5`)**: Contains the actual function definitions
+1. **Header file (`.c5h`)**: Contains function declarations (prototypes).
+2. **Implementation file (`.c5`)**: Contains the actual function definitions.
+
+### Include Guards (detect once;)
+
+To prevent a header file from being included multiple times (which can cause redeclaration errors), use the `detect once;` directive at the very top of your `.c5h` file:
+
+```c
+detect once;
+
+// Your declarations here...
+```
+
+This is functionally equivalent to `#pragma once` in C/C++.
 
 #### Example: Math Library
 
@@ -1511,7 +1603,7 @@ When you include a header file (e.g., `include <math.c5h>`), all functions decla
 - `utils.c5h` → `utils::` namespace
 - `std.c5h` → `std::` namespace
 
-This prevents symbol collisions between different libraries.
+This prevents symbol collisions between different libraries. If you prefer not to use namespaces, you can use the `#namespaces 0;` directive before an `include` to import symbols into the global scope. See [Directives & Namespacing](#5-directives--namespacing) for details.
 
 ### Best Practices
 

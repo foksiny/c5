@@ -1,3 +1,5 @@
+detect once;
+
 libinclude <math.a> #static
 
 // Constants

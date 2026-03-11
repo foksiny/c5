@@ -184,7 +184,7 @@ def _namespace_types_in_node(node, namespace):
         fields = l[2]
         new_fields = []
         for fty, fname in fields:
-            new_fields.append((_namespace_type(fty, namespace), fname))
+            new_fields.append((_namespace_type(pty, namespace), fname))
         l[2] = new_fields
     elif tag in ('enum_decl', 'type_decl'):
         # Enum or Type title
@@ -204,6 +204,94 @@ def _namespace_types_in_node(node, namespace):
         
     return tuple(l)
 
+def _process_includes(ast, dir_path, include_paths, global_path, processed_files=None, use_namespaces=True, current_file_path=None):
+    if processed_files is None:
+        processed_files = set()
+        
+    if current_file_path and current_file_path in processed_files:
+        return [], set(), set(), []
+
+    new_ast = []
+    library_funcs = set()
+    library_vars = set()
+    lib_includes = []
+    
+    # Check if current AST has detect once
+    has_detect_once = any(isinstance(n, tuple) and n[0] == 'detect_once' for n in ast)
+    if has_detect_once and current_file_path:
+        processed_files.add(current_file_path)
+
+    for node in ast:
+        if isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'namespaces':
+            use_namespaces = bool(node[2])
+            new_ast.append(node)
+        elif isinstance(node, tuple) and node[0] == 'include':
+            fname = node[1]
+            search_paths = [dir_path] + include_paths + [
+                os.path.join(dir_path, '..', 'c5include'),
+                os.path.join(os.getcwd(), 'c5include'),
+                global_path
+            ]
+            inc_path = None
+            for p in search_paths:
+                fullpath = os.path.join(p, fname)
+                if os.path.exists(fullpath):
+                    inc_path = os.path.abspath(fullpath)
+                    break
+            if not inc_path:
+                raise Exception(f"Include not found: {fname}")
+            
+            # Check if already included with detect once
+            if inc_path in processed_files:
+                continue
+                
+            inc_code = open(inc_path).read()
+            inc_tokens = lex(inc_code)
+            inc_ast = Parser(inc_tokens).parse_program()
+            
+            # Recursive process
+            res_ast, res_funcs, res_vars, res_libs = _process_includes(
+                inc_ast, os.path.dirname(inc_path), include_paths, global_path, processed_files, use_namespaces, inc_path
+            )
+            
+            # Apply namespacing if needed
+            if use_namespaces:
+                namespace = os.path.splitext(fname)[0]
+                final_inc_ast = []
+                for n in res_ast:
+                    if isinstance(n, tuple):
+                        final_inc_ast.append(_namespace_types_in_node(n, namespace))
+                    else:
+                        final_inc_ast.append(n)
+                
+                # Also namespace tracked funcs/vars
+                library_funcs.update({f"{namespace}::{f}" for f in res_funcs})
+                library_vars.update({f"{namespace}::{v}" for v in res_vars})
+            else:
+                final_inc_ast = res_ast
+                library_funcs.update(res_funcs)
+                library_vars.update(res_vars)
+                
+            lib_includes.extend(res_libs)
+            new_ast.extend(final_inc_ast)
+            
+        elif isinstance(node, tuple) and node[0] == 'libinclude':
+            raw_path = node[1]
+            libtype = node[2]
+            resolved_path = os.path.normpath(os.path.join(dir_path, raw_path))
+            lib_includes.append((resolved_path, libtype))
+        elif isinstance(node, tuple) and node[0] == 'detect_once':
+            continue
+        else:
+            if isinstance(node, tuple):
+                if node[0] in ('func', 'extern'):
+                    library_funcs.add(node[2])
+                elif node[0] == 'pub_var':
+                    library_vars.add(node[2])
+            new_ast.append(node)
+            
+    return new_ast, library_funcs, library_vars, lib_includes
+
 def compile_file(filepath, include_paths=None, is_library=False):
     if include_paths is None: include_paths = []
     
@@ -215,68 +303,9 @@ def compile_file(filepath, include_paths=None, is_library=False):
     dir_path = os.path.dirname(os.path.abspath(filepath))
     global_path = os.path.expanduser("~/.c5/include")
     
-    new_ast = []
-    library_funcs = set()  # Track functions from included headers
-    library_vars = set()   # Track variables from included headers
-    lib_includes = []      # Collect library linking directives
-    for node in ast:
-        if node[0] == 'include':
-            fname = node[1]
-            inc_list = include_paths if include_paths else []
-            search_paths = [dir_path] + inc_list + [
-                os.path.join(dir_path, '..', 'c5include'),
-                os.path.join(os.getcwd(), 'c5include'),
-                global_path
-            ]
-            inc_path = None
-            for p in search_paths:
-                fullpath = os.path.join(p, fname)
-                if os.path.exists(fullpath):
-                    inc_path = fullpath
-                    break
-            if not inc_path:
-                raise Exception(f"Include not found: {fname}")
-            
-            inc_code = open(inc_path).read()
-            inc_tokens = lex(inc_code)
-            inc_ast = Parser(inc_tokens).parse_program()
-            
-            # Auto-namespace based on filename (e.g., std.c5h -> std::)
-            namespace = os.path.splitext(fname)[0]
-            namespaced_ast = []
-            for n in inc_ast:
-                if isinstance(n, tuple):
-                    namespaced_ast.append(_namespace_types_in_node(n, namespace))
-                else:
-                    namespaced_ast.append(n)
-            # Filter out libinclude nodes from the included header and collect them
-            filtered_ast = []
-            for n in namespaced_ast:
-                if isinstance(n, tuple) and n[0] == 'libinclude':
-                    raw_path = n[1]
-                    libtype = n[2]
-                    base_dir = os.path.dirname(inc_path)
-                    resolved_path = os.path.normpath(os.path.join(base_dir, raw_path))
-                    lib_includes.append((resolved_path, libtype))
-                else:
-                    filtered_ast.append(n)
-            namespaced_ast = filtered_ast
-            
-            # Collect library functions and variables from this include
-            for n in namespaced_ast:
-                if isinstance(n, tuple):
-                    if n[0] in ('func', 'extern'):
-                        library_funcs.add(n[2])
-                    elif n[0] == 'pub_var':
-                        library_vars.add(n[2])
-            new_ast.extend(namespaced_ast)
-        elif node[0] == 'libinclude':
-            raw_path = node[1]
-            libtype = node[2]
-            resolved_path = os.path.normpath(os.path.join(dir_path, raw_path))
-            lib_includes.append((resolved_path, libtype))
-        else:
-            new_ast.append(node)
+    new_ast, library_funcs, library_vars, lib_includes = _process_includes(
+        ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
+    )
     
     # Collect and expand macros
     macros = _collect_macros(new_ast)
@@ -320,6 +349,8 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     library_funcs = set()  # Track functions from non-primary files
     library_vars = set()   # Track variables from library files (no dead code warnings)
     lib_includes = []      # Collect library linking directives
+    use_namespaces = True
+    processed_files = set()
     
     for filepath in filepaths:
         code = open(filepath).read()
@@ -335,70 +366,39 @@ def compile_files(filepaths, include_paths=None, is_library=False):
         # If this is not the primary file, track its functions as library functions
         is_primary = (filepath == primary_file)
         
-        for node in ast:
-            if node[0] == 'include':
-                fname = node[1]
-                inc_list = include_paths if include_paths else []
-                search_paths = [dir_path] + inc_list + [
-                    os.path.join(dir_path, '..', 'c5include'),
-                    os.path.join(os.getcwd(), 'c5include'),
-                    global_path
-                ]
-                inc_path = None
-                for p in search_paths:
-                    fullpath = os.path.join(p, fname)
-                    if os.path.exists(fullpath):
-                        inc_path = fullpath
-                        break
-                if not inc_path:
-                    raise Exception(f"Include not found: {fname}")
-                
-                inc_code = open(inc_path).read()
-                inc_tokens = lex(inc_code)
-                inc_ast = Parser(inc_tokens).parse_program()
-                
-                # Auto-namespace based on filename (e.g., std.c5h -> std::)
-                namespace = os.path.splitext(fname)[0]
-                namespaced_ast = []
-                for n in inc_ast:
-                    if isinstance(n, tuple):
-                        namespaced_ast.append(_namespace_types_in_node(n, namespace))
-                    else:
-                        namespaced_ast.append(n)
-                # Filter out libinclude nodes from the included header and collect them
-                filtered_ast = []
-                for n in namespaced_ast:
-                    if isinstance(n, tuple) and n[0] == 'libinclude':
-                        raw_path = n[1]
-                        libtype = n[2]
-                        base_dir = os.path.dirname(inc_path)
-                        resolved_path = os.path.normpath(os.path.join(base_dir, raw_path))
-                        lib_includes.append((resolved_path, libtype))
-                    else:
-                        filtered_ast.append(n)
-                namespaced_ast = filtered_ast
-                
-                # Collect library functions and variables from this include
-                for n in namespaced_ast:
-                    if isinstance(n, tuple):
-                        if n[0] in ('func', 'extern'):
-                            library_funcs.add(n[2])
-                        elif n[0] == 'pub_var':
-                            library_vars.add(n[2])
-                combined_ast.extend(namespaced_ast)
-            elif node[0] == 'libinclude':
-                raw_path = node[1]
-                libtype = node[2]
-                resolved_path = os.path.normpath(os.path.join(dir_path, raw_path))
-                lib_includes.append((resolved_path, libtype))
-            else:
-                # Track functions and variables from non-primary files
-                if not is_primary and isinstance(node, tuple):
+        res_ast, res_funcs, res_vars, res_libs = _process_includes(
+            ast, dir_path, include_paths, global_path, processed_files, use_namespaces, os.path.abspath(filepath)
+        )
+        
+        if not is_primary:
+            namespace = os.path.splitext(os.path.basename(filepath))[0]
+            # Auto-namespace the AST from this secondary file
+            namespaced_res_ast = []
+            for node in res_ast:
+                if isinstance(node, tuple):
+                    namespaced_res_ast.append(_namespace_types_in_node(node, namespace))
+                else:
+                    namespaced_res_ast.append(node)
+            res_ast = namespaced_res_ast
+            
+            # Also namespace tracked funcs/vars so they match
+            library_funcs.update({f"{namespace}::{f}" for f in res_funcs})
+            library_vars.update({f"{namespace}::{v}" for v in res_vars})
+            
+            # Also track functions and variables from this non-primary file itself (namespaced)
+            for node in ast:
+                if isinstance(node, tuple):
                     if node[0] == 'func':
-                        library_funcs.add(node[2])
+                        library_funcs.add(f"{namespace}::{node[2]}")
                     elif node[0] == 'pub_var':
-                        library_vars.add(node[2])
-                combined_ast.append(node)
+                        library_vars.add(f"{namespace}::{node[2]}")
+        else:
+            # For primary file, only track funcs/vars from its includes
+            library_funcs.update(res_funcs)
+            library_vars.update(res_vars)
+
+        lib_includes.extend(res_libs)
+        combined_ast.extend(res_ast)
     
     # Collect and expand macros
     macros = _collect_macros(combined_ast)

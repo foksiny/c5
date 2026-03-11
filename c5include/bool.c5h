@@ -1,3 +1,5 @@
+detect once;
+
 type Bool {
     const unsigned int<1>
 };

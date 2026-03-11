@@ -39,11 +39,15 @@
   '("void" "int" "float" "char" "string" "array")
   "Built-in types for C5.")
 
+(defvar c5-methods
+  '("push" "pop" "length" "insert" "insertItems" "clear" "replace")
+  "Built-in methods for arrays and strings in C5.")
+
 (defvar c5-font-lock-keywords
   (list
    ;; Includes with filenames
    '("^\\s-*\\(?:lib\\)?include\\s-+<\\([^>]+\\)>" (1 font-lock-string-face))
-   ;; Preprocessor-like directives (#static, #dynamic)
+   ;; Preprocessor-like directives (#static, #dynamic, #namespaces)
    '("#[a-zA-Z_]+" . font-lock-preprocessor-face)
    ;; Keywords
    (cons (regexp-opt c5-keywords 'words) font-lock-keyword-face)
@@ -51,6 +55,8 @@
    (cons (regexp-opt c5-constants 'words) font-lock-constant-face)
    ;; Built-in types
    (cons (regexp-opt c5-types 'words) font-lock-type-face)
+   ;; Built-in methods
+   (cons (concat "\\." (regexp-opt c5-methods 'words)) font-lock-builtin-face)
    ;; C-style array definitions: type name[size] or type name[size] = {...}
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s*\\[[^]]+\\]"
      (1 font-lock-type-face)

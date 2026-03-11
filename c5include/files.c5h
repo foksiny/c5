@@ -1,3 +1,5 @@
+detect once;
+
 libinclude <files.a> #static
 
 void writef(string filename, string mode, string text); // write to a file or replace it (based on mode)

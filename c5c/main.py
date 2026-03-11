@@ -2,16 +2,58 @@ import sys
 import os
 import subprocess
 import argparse
+import shutil
+import tempfile
 from .compiler import compile_file, compile_files
+
+def parse_build_file(content):
+    config = {
+        'type': 'program',
+        'libtype': 'static',
+        'files': [],
+        'h_files': [],
+        'outfolder': '',
+        'outname': '',
+        'install': 'no',
+        'noutfolder': False
+    }
+    
+    lines = content.split('\n')
+    current_key = None
+    
+    for line in lines:
+        line = line.split('//')[0].strip()
+        if not line: continue
+        
+        if line.endswith(':'):
+            current_key = line[:-1].strip()
+            continue
+            
+        if ':' in line:
+            key, val = line.split(':', 1)
+            key = key.strip()
+            val = val.strip().strip('"')
+            if key == 'noutfolder':
+                config[key] = (val == '1')
+            elif key in config:
+                config[key] = val
+            current_key = key
+        elif current_key and (line.startswith('"') or line.startswith(' ')):
+            val = line.strip().strip('"')
+            if current_key in ('files', 'h_files'):
+                config[current_key].append(val)
+                    
+    return config
 
 def main():
     parser = argparse.ArgumentParser(description="C5 Compiler (c5c)")
-    parser.add_argument("inputs", nargs="*", help="Source .c5 file(s)")
+    parser.add_argument("inputs", nargs="*", help="Source .c5, .c5h, or .c5b file(s)")
     parser.add_argument("-o", "--output", help="Output filename")
     parser.add_argument("-S", action="store_true", help="Output assembly only")
     parser.add_argument("-I", "--include", action="append", help="Add include search path")
     parser.add_argument("--setup-libs", action="store_true", help="Setup global C5 libraries")
     parser.add_argument("--lib", choices=['dynamic', 'static'], help="Compile as library. Use 'static' for static library (.a) or 'dynamic' for shared library (.so)")
+    parser.add_argument("--build", nargs="?", const="build.c5b", help="Build project using a build file (.c5b)")
     
     args = parser.parse_args()
 
@@ -27,8 +69,6 @@ def main():
             
         print(f"Installing libraries to {global_path}...")
         os.makedirs(global_path, exist_ok=True)
-        import shutil
-        import tempfile
         
         # First, copy all non-.c5 files as-is (headers, etc.)
         # But skip .a files that have a corresponding .c5 source (they'll be rebuilt)
@@ -111,25 +151,76 @@ def main():
         sys.exit(0)
     
     input_files = args.inputs
+    if args.build:
+        build_path = args.build
+        if os.path.isdir(build_path):
+            build_path = os.path.join(build_path, "build.c5b")
+        
+        if not os.path.exists(build_path):
+            print(f"Error: Build file not found: {build_path}")
+            sys.exit(1)
+        input_files = [build_path]
+
     if not input_files:
         print("Error: No input files provided")
         sys.exit(1)
     
-    for input_file in input_files:
-        if not input_file.endswith('.c5'):
-            print(f"Error: Expected a .c5 file, got {input_file}")
+    # Handle build file (.c5b)
+    if input_files[0].endswith('.c5b'):
+        if len(input_files) > 1:
+            print("Warning: Multiple files provided with a build file. Only the build file will be used.")
+        
+        build_file = input_files[0]
+        dir_path = os.path.dirname(os.path.abspath(build_file))
+        with open(build_file, 'r') as f:
+            content = f.read()
+        
+        config = parse_build_file(content)
+        
+        # Override args with config from build file
+        input_files = [os.path.join(dir_path, f) for f in config['files']]
+        if not input_files:
+            print(f"Error: No source files specified in {build_file}")
             sys.exit(1)
-    
+            
+        is_lib = (config['type'] == 'library')
+        lib_type = config['libtype'] if is_lib else None
+        
+        out_name = config['outname'] or os.path.splitext(os.path.basename(input_files[0]))[0]
+        out_folder = config['outfolder']
+        
+        if out_folder:
+            out_folder_path = os.path.join(dir_path, out_folder)
+            os.makedirs(out_folder_path, exist_ok=True)
+            output_path = os.path.join(out_folder_path, out_name)
+        else:
+            output_path = os.path.join(dir_path, out_name)
+            
+        # Update args object
+        args.lib = lib_type
+        args.output = output_path
+        
+        # Prepare for compilation
+        print(f"Building project: {build_file}")
+    else:
+        for input_file in input_files:
+            if not (input_file.endswith('.c5') or input_file.endswith('.c5h')):
+                print(f"Error: Expected a .c5 or .c5h file, got {input_file}")
+                sys.exit(1)
+        is_lib = (args.lib is not None)
+        lib_type = args.lib if is_lib else None
+        output_path = args.output
+
     # Use first file as base for output naming if not specified
     base_name = os.path.splitext(input_files[0])[0]
     
     # Assembly phase
-    print(f"Compiling {', '.join(input_files)} to GAS assembly...")
+    print(f"Compiling {', '.join([os.path.basename(f) for f in input_files])} to GAS assembly...")
     try:
         if len(input_files) == 1:
-            result = compile_file(input_files[0], include_paths=args.include, is_library=(args.lib is not None))
+            result = compile_file(input_files[0], include_paths=args.include, is_library=is_lib)
         else:
-            result = compile_files(input_files, include_paths=args.include, is_library=(args.lib is not None))
+            result = compile_files(input_files, include_paths=args.include, is_library=is_lib)
         # result is (asm, lib_includes)
         asm, lib_includes = result
     except Exception as e:
@@ -137,7 +228,7 @@ def main():
         sys.exit(1)
 
     if args.S:
-        out_s = args.output if args.output else base_name + ".s"
+        out_s = output_path + ".s" if output_path else base_name + ".s"
         with open(out_s, "w") as f:
             f.write(asm)
         print(f"Success! Assembly generated at: {out_s}")
@@ -150,10 +241,6 @@ def main():
     
     with open(s_file, "w") as f:
         f.write(asm)
-    
-    # Determine if we're making a library and what type
-    is_lib = args.lib is not None
-    lib_type = args.lib if is_lib else None
     
     # Assemble to object file
     if lib_type == 'dynamic':
@@ -178,6 +265,7 @@ def main():
         if os.path.exists(o_file): os.remove(o_file)
         sys.exit(res.returncode)
     
+    final_out = output_path
     if is_lib:
         # Library output
         if lib_type == 'static':
@@ -185,8 +273,7 @@ def main():
         else:
             extension = '.so'
         
-        if args.output:
-            final_out = args.output
+        if final_out:
             if not final_out.endswith(extension):
                 final_out += extension
         else:
@@ -212,13 +299,54 @@ def main():
                 if os.path.exists(o_file): os.remove(o_file)
                 sys.exit(res.returncode)
             print(f"Success! Shared library ready at: {final_out}")
-        
+            
+        # Installation logic for build system
+        if input_files[0].endswith(".c5b") and 'config' in locals():
+            install_opt = config.get('install', 'no')
+            do_install = False
+            if install_opt == 'ask':
+                ans = input(f"Do you want to install library '{out_name}'? (Y/n): ")
+                if ans.lower() != 'n':
+                    do_install = True
+            elif install_opt == 'force':
+                print(f"Installing library '{out_name}'...")
+                do_install = True
+            
+            if do_install:
+                global_path = os.path.expanduser("~/.c5/include")
+                os.makedirs(global_path, exist_ok=True)
+                
+                # Copy output file
+                dest_lib = os.path.join(global_path, os.path.basename(final_out))
+                shutil.copy2(final_out, dest_lib)
+                
+                # Copy header files
+                for h_file in config.get('h_files', []):
+                    src_h = os.path.join(dir_path, h_file)
+                    if os.path.exists(src_h):
+                        dest_h = os.path.join(global_path, os.path.basename(h_file))
+                        shutil.copy2(src_h, dest_h)
+                        print(f"Installed header: {os.path.basename(h_file)}")
+                
+                # Copy outfolder if requested and noutfolder is False
+                if out_folder and not config.get('noutfolder', False):
+                    src_folder = os.path.join(dir_path, out_folder)
+                    dest_folder = os.path.join(global_path, out_folder)
+                    if os.path.exists(src_folder) and os.path.abspath(src_folder) != os.path.abspath(dest_folder):
+                        if os.path.exists(dest_folder):
+                            shutil.rmtree(dest_folder)
+                        shutil.copytree(src_folder, dest_folder)
+                        print(f"Installed output folder: {out_folder}")
+                
+                print(f"Successfully installed to {global_path}")
+
         # Clean up intermediate files
         if os.path.exists(s_file): os.remove(s_file)
         if os.path.exists(o_file): os.remove(o_file)
     else:
         # Executable mode: link with libraries
-        final_out = args.output if args.output else base_name
+        if not final_out:
+            final_out = base_name
         print(f"Linking...")
         cmd = ["gcc", o_file] + lib_paths + ["-o", final_out]
         res = subprocess.run(cmd)

@@ -1,3 +1,5 @@
+detect once;
+
 libinclude <str.a> #static
 
 unsigned int<1> isdigit(string s);

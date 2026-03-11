@@ -1309,10 +1309,29 @@ class SemanticAnalyzer:
             if not isinstance(node, tuple): continue
             loc = self._get_loc(node)
             if node[0] == 'func':
-                if node[2] in self.functions: self.add_error("E010", node[2], loc)
+                if node[2] in self.functions:
+                    # Check if it was an extern declaration
+                    prev_info = self.functions[node[2]]
+                    is_prev_extern = prev_info[3]
+                    if not is_prev_extern:
+                        self.add_error("E010", node[2], loc)
+                    else:
+                        # Validate signature compatibility
+                        # (ret_ty, param_count, varargs, is_extern)
+                        if prev_info[0] != node[1] or prev_info[1] != len(node[3]):
+                            self.add_error("E010", f"{node[2]} (signature mismatch with previous declaration)", loc)
+                
                 self.functions[node[2]] = (node[1], len(node[3]), False, False)
                 self.func_locs[node[2]] = loc  # Store function location
             elif node[0] == 'extern':
+                if node[2] in self.functions:
+                    # If already declared/defined, check compatibility
+                    prev_info = self.functions[node[2]]
+                    if prev_info[0] != node[1] or prev_info[1] != len(node[3]) or prev_info[2] != node[4]:
+                        self.add_error("E010", f"{node[2]} (signature mismatch with previous declaration)", loc)
+                    # If it's already a 'func' (not extern), don't overwrite it
+                    if not prev_info[3]:
+                        continue
                 self.functions[node[2]] = (node[1], len(node[3]), node[4], True)
                 self.func_locs[node[2]] = loc  # Store function location
             elif node[0] == 'struct_decl':

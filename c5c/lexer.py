@@ -27,6 +27,8 @@ def lex(code):
         ('BREAK',     r'break\b'),
         ('TRY',       r'try\b'),
         ('CATCH',     r'catch\b'),
+        ('DETECT',    r'detect\b'),
+        ('ONCE',      r'once\b'),
         ('WHILE',     r'while\b'),
         ('FOR',       r'for\b'),
         ('FOREACH',   r'foreach\b'),
