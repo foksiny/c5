@@ -265,6 +265,36 @@ float pi = 3.14159;
 char initial = 'J';
 ```
 
+#### Nested Assignments
+C5 supports nested assignments, allowing you to assign a value to multiple variables in a single statement. The assignment expression returns the assigned value, which can then be used as the right-hand side of another assignment.
+
+```c
+int a;
+int b;
+int c;
+a = b = c = 100; // All variables are now 100
+```
+
+Nested assignments also work with structs and other aggregate types:
+
+```c
+Point p1;
+Point p2;
+p1 = p2 = {10, 20};
+```
+
+#### Aggregate Reassignment
+You can reassign values to existing struct or array variables using initializer lists. This is particularly useful inside loops:
+
+```c
+Point p = {0, 0};
+while (condition) {
+    p = {new_x, new_y}; // Direct reassignment using initializer list
+}
+```
+
+This is supported for both `struct` types and `array<T>` types.
+
 #### Constants
 Use the `const` keyword to declare variables that cannot be modified after initialization. Constants can be declared at both global and local scope:
 

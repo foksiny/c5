@@ -1,0 +1,38 @@
+include <std.c5h>
+
+void main() {
+    // Int to String
+    int i = 1234567890123;
+    string s_i = (string)i;
+    std::printf("int to string: %s\n", s_i);
+
+    // Negative Int to String
+    int ni = -123456789;
+    string s_ni = (string)ni;
+    std::printf("negative int to string: %s\n", s_ni);
+
+    // Unsigned Int (large) to String
+    unsigned int ui = 18446744073709551615; // Max uint64
+    string s_ui = (string)ui;
+    std::printf("uint to string: %s\n", s_ui);
+
+    // Float to String
+    float f = 3.14159;
+    string s_f = (string)f;
+    std::printf("float to string: %s\n", s_f);
+
+    // String to Int
+    string s2i = "1234567890123";
+    int i2 = (int)s2i;
+    std::printf("string to int: %ld\n", i2);
+
+    // String to Float
+    string s2f = "2.71828";
+    float f2 = (float)s2f;
+    std::printf("string to float: %g\n", f2);
+    
+    // String with scientific notation to Float
+    string sef = "1.23e-4";
+    float ef2 = (float)sef;
+    std::printf("string scientific to float: %g\n", ef2);
+}

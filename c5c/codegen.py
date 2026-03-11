@@ -920,7 +920,7 @@ __c5_str_replace:
     def gen_stmt(self, node):
         if node[0] == 'expr_stmt':
             ret_ty = self.gen_expr(node[1])
-            if ret_ty in self.structs:
+            if self._returns_by_stack(ret_ty):
                 st_sz = self.sizeof(ret_ty)
                 if st_sz % 16 != 0: st_sz += 16 - (st_sz % 16)
                 self.text.append(f"    add ${st_sz}, %rsp")
@@ -1868,35 +1868,62 @@ __c5_str_replace:
                 return 'char'
             # String to integer
             if src_ty in ('string', 'char*') and self._is_integer_type(dst_ty):
-                # Call atoi: expects char* in %rdi, returns int in %rax
+                # Call atoll: expects char* in %rdi, returns long long in %rax
                 self.text.append("    mov %rax, %rdi")
-                self.text.append("    call atoi@PLT")
-                # Extend the 32-bit result to the destination integer type size
+                self.text.append("    call atoll@PLT")
+                # Extend/truncate result to the destination integer type size
                 dst_sz = self.sizeof(dst_ty)
                 dst_signed = self._is_signed_type(dst_ty)
-                if dst_sz >= 8:
-                    if dst_signed:
-                        self.text.append("    movslq %eax, %rax")
-                    else:
-                        self.text.append("    movl %eax, %eax")
-                elif dst_sz == 4:
-                    if dst_signed:
-                        self.text.append("    movslq %eax, %rax")
-                    else:
-                        self.text.append("    movl %eax, %eax")
-                elif dst_sz == 2:
-                    if dst_signed:
-                        self.text.append("    movswq %ax, %rax")
-                    else:
-                        self.text.append("    movzwq %ax, %rax")
-                elif dst_sz == 1:
-                    if dst_signed:
-                        self.text.append("    movsbq %al, %rax")
-                    else:
-                        self.text.append("    movzbq %al, %rax")
+                if dst_sz < 8:
+                    if dst_sz == 4:
+                        if dst_signed: self.text.append("    movslq %eax, %rax")
+                        else: self.text.append("    movl %eax, %eax")
+                    elif dst_sz == 2:
+                        if dst_signed: self.text.append("    movswq %ax, %rax")
+                        else: self.text.append("    movzwq %ax, %rax")
+                    elif dst_sz == 1:
+                        if dst_signed: self.text.append("    movsbq %al, %rax")
+                        else: self.text.append("    movzbq %al, %rax")
                 return dst_ty
+            # String to float
+            if src_ty in ('string', 'char*') and dst_ty.startswith('float'):
+                self.text.append("    mov %rax, %rdi")
+                self.text.append("    call atof@PLT")
+                if dst_ty == 'float<32>':
+                    self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                return dst_ty
+            # Float to string
+            if src_ty.startswith('float') and dst_ty in ('string', 'char*'):
+                # Save float value on stack
+                self.text.append("    sub $16, %rsp")
+                if src_ty == 'float<32>':
+                    self.text.append("    movss %xmm0, 8(%rsp)")
+                else:
+                    self.text.append("    movsd %xmm0, 8(%rsp)")
+                # Allocate buffer (64 bytes)
+                self.text.append("    mov $64, %rdi")
+                self.text.append("    call malloc@PLT")
+                self.text.append("    mov %rax, (%rsp)")
+                # Prepare sprintf
+                self.text.append("    mov (%rsp), %rdi")
+                if not hasattr(self, 'float_format_label') or not self.float_format_label:
+                    self.float_format_label = f".LC_FLOAT_FMT{self.str_count}"
+                    self.str_count += 1
+                    self.rodata.append(f"{self.float_format_label}:")
+                    self.rodata.append('    .string "%g"')
+                self.text.append(f"    lea {self.float_format_label}(%rip), %rsi")
+                if src_ty == 'float<32>':
+                    self.text.append("    cvtss2sd 8(%rsp), %xmm0")
+                else:
+                    self.text.append("    movsd 8(%rsp), %xmm0")
+                self.text.append("    mov $1, %eax") # 1 float arg
+                self.text.append("    call sprintf@PLT")
+                self.text.append("    mov (%rsp), %rax")
+                self.text.append("    add $16, %rsp")
+                return 'string'
             # Integer to string
             if self._is_integer_type(src_ty) and dst_ty in ('string', 'char*'):
+                is_unsigned = src_ty.startswith('unsigned ')
                 # Allocate 16 bytes on stack to store integer and maintain alignment
                 self.text.append("    sub $16, %rsp")  # allocate 16 bytes, keep stack aligned
                 self.text.append("    mov %rax, 8(%rsp)")  # save integer at offset 8
@@ -1908,12 +1935,23 @@ __c5_str_replace:
                 # Prepare arguments for sprintf
                 self.text.append("    mov (%rsp), %rdi")  # buffer
                 # Get or create format string for integer conversion
-                if not self.int_format_label:
-                    self.int_format_label = f".LC_INT_FMT{self.str_count}"
-                    self.str_count += 1
-                    self.rodata.append(f"{self.int_format_label}:")
-                    self.rodata.append('    .string "%d"')
-                self.text.append(f"    lea {self.int_format_label}(%rip), %rsi")  # format
+                fmt_label = None
+                if is_unsigned:
+                    if not hasattr(self, 'uint_format_label') or not self.uint_format_label:
+                        self.uint_format_label = f".LC_UINT_FMT{self.str_count}"
+                        self.str_count += 1
+                        self.rodata.append(f"{self.uint_format_label}:")
+                        self.rodata.append('    .string "%lu"')
+                    fmt_label = self.uint_format_label
+                else:
+                    if not self.int_format_label:
+                        self.int_format_label = f".LC_INT_FMT{self.str_count}"
+                        self.str_count += 1
+                        self.rodata.append(f"{self.int_format_label}:")
+                        self.rodata.append('    .string "%ld"')
+                    fmt_label = self.int_format_label
+                
+                self.text.append(f"    lea {fmt_label}(%rip), %rsi")  # format
                 self.text.append("    mov 8(%rsp), %rdx")  # integer value
                 self.text.append("    xor %al, %al")  # clear al for variadic function
                 self.text.append("    call sprintf@PLT")
@@ -2256,19 +2294,6 @@ __c5_str_replace:
         elif node[0] == 'assign':
             left, right = node[1], node[2]
             
-            # Special case for *ptr = ...
-            if left[0] == 'unary' and left[1] == '*':
-                self.gen_expr(left[2]) # Get address in %rax
-                self.text.append("    push %rax")
-                ty_r = self.gen_expr(right)
-                self.text.append("    pop %rcx") # Address in %rcx, value in %rax
-                if self._is_float(ty_r):
-                    if ty_r == 'float<32>': self.text.append("    movss %xmm0, (%rcx)")
-                    else: self.text.append("    movsd %xmm0, (%rcx)")
-                else:
-                    self.text.append("    mov %rax, (%rcx)")
-                return ty_r
-
             addr, ty_l = self.get_lvalue(left)
             
             # If the address is dynamic (uses volatile registers), save it on stack
@@ -2287,7 +2312,9 @@ __c5_str_replace:
                 self.text.append(f"    mov ${self.sizeof(ty_l)}, %rdx")
                 self.text.append("    call memcpy@PLT")
                 self.text.append(f"    add ${self.sizeof(ty_l)}, %rsp")
-                return ty_l
+                # Return pointer to destination instead of aggregate to avoid double stack cleanup
+                self.text.append("    mov %rdi, %rax")
+                return ty_l + '*'
             
             if self._is_aggregate(ty_l):
                 ty_r = self.gen_expr(right)
@@ -2328,7 +2355,9 @@ __c5_str_replace:
                         elif sz == 2: self.text.append("    mov %ax, (%rdi)")
                         elif sz == 4: self.text.append("    mov %eax, (%rdi)")
                         else: self.text.append("    mov %rax, (%rdi)")
-                return ty_l
+                # Return pointer to destination instead of aggregate to avoid double stack cleanup
+                self.text.append("    mov %rdi, %rax")
+                return ty_l + '*'
             
             ty_r = self.gen_expr(right)
             if addr_on_stack:

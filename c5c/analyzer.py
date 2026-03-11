@@ -310,6 +310,12 @@ class SemanticAnalyzer:
             if name == 'c_str':
                 return 'char*'
             return self.functions.get(name, ("int", 0, False, False))[0]
+        if tag == 'assign':
+            return self._get_type(node[1])
+        if tag == 'compound_assign':
+            return self._get_type(node[1])
+        if tag in ('pre_inc', 'pre_dec', 'post_inc', 'post_dec'):
+            return self._get_type(node[1])
         return "unknown"
 
     # Helper methods for type checking
@@ -737,16 +743,64 @@ class SemanticAnalyzer:
             if right[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
                 delattr(self, 'lambda_ret_type')
 
-            r_ty = self._get_type(right)
-            # Check integer literal range/type
-            if right[0] == 'number' and isinstance(right[1], int):
-                self._check_int_literal_against_type(l_ty, right[1], loc)
-            elif right[0] == 'float':
-                self._check_float_literal_against_type(l_ty, right[1], loc)
+            # Check for initializer list assignment
+            if right[0] == 'init_list':
+                if l_ty in self.structs:
+                    fields = self.structs[l_ty]
+                    elements = right[1]
+                    if len(elements) > len(fields):
+                        self.add_error("E015", f"too many initializers for struct {l_ty}", loc)
+                    for i, elem in enumerate(elements):
+                        if i >= len(fields): break
+                        field_type = fields[i][0]
+                        if elem[0] == 'number' and isinstance(elem[1], int):
+                            self._check_int_literal_against_type(field_type, elem[1], loc)
+                        elif elem[0] == 'float':
+                            self._check_float_literal_against_type(field_type, elem[1], loc)
+                        else:
+                            elem_type = self._get_type(elem)
+                            if not self._types_compatible(field_type, elem_type):
+                                self.add_error("E002", f"Cannot assign {elem_type} to field {fields[i][1]} of type {field_type}", loc)
+                elif self._is_fixed_array_type(l_ty):
+                    elem_ty = self._get_fixed_array_element_type(l_ty)
+                    elements = right[1]
+                    _, count = self._parse_fixed_array_type(l_ty)
+                    if len(elements) > count:
+                        self.add_error("E015", f"too many initializers for array {l_ty}", loc)
+                    for elem in elements:
+                        if elem[0] == 'number' and isinstance(elem[1], int):
+                            self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                        elif elem[0] == 'float':
+                            self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                        else:
+                            elem_type = self._get_type(elem)
+                            if not self._types_compatible(elem_ty, elem_type):
+                                self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+                elif l_ty.startswith('array<') and l_ty.endswith('>'):
+                    elem_ty = l_ty[6:-1]
+                    elements = right[1]
+                    for elem in elements:
+                        if elem[0] == 'number' and isinstance(elem[1], int):
+                            self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                        elif elem[0] == 'float':
+                            self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                        else:
+                            elem_type = self._get_type(elem)
+                            if not self._types_compatible(elem_ty, elem_type):
+                                self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+                else:
+                    self.add_error("E002", f"Cannot assign initializer list to non-aggregate type {l_ty}", loc)
             else:
-                # For non-literals, require type compatibility
-                if not self._types_compatible(l_ty, r_ty):
-                    self.add_error("E002", f"Cannot assign {r_ty} to {l_ty}", loc)
+                r_ty = self._get_type(right)
+                # Check integer literal range/type
+                if right[0] == 'number' and isinstance(right[1], int):
+                    self._check_int_literal_against_type(l_ty, right[1], loc)
+                elif right[0] == 'float':
+                    self._check_float_literal_against_type(l_ty, right[1], loc)
+                else:
+                    # For non-literals, require type compatibility
+                    if not self._types_compatible(l_ty, r_ty):
+                        self.add_error("E002", f"Cannot assign {r_ty} to {l_ty}", loc)
 
             # Check if left-hand side is a const variable
             if left[0] == 'id':
