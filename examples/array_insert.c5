@@ -1,0 +1,23 @@
+include <std.c5h>
+
+void main() {
+    array<int<32>> ilist;
+
+    ilist.push(10);
+    ilist.push(20);
+    ilist.push(30);
+
+    ilist.insert(0, 5); // single-item insert
+
+    std::printf("---------------\n");
+    foreach (i, item in ilist) {
+        std::printf("%d\n", item);
+    }
+
+    ilist.insertItems(2, {40, 20, 10, 50, 30}); // multi-item insert (also support variables, obviously)
+
+    std::printf("---------------\n");
+    foreach (i, item in ilist) {
+        std::printf("%d\n", item);
+    }
+}

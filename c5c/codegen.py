@@ -2795,6 +2795,247 @@ __c5_str_replace:
                         self.text.append(f"    incq {arr_ref(8)}")
                         return 'void'
                     
+                    elif method == 'insert':
+                        # args[0]: index, args[1]: value
+                        # 1. Evaluate index and save
+                        self.gen_expr(args[0])
+                        self.text.append("    push %rax") # [index]
+                        
+                        # 2. Evaluate value (exactly like push)
+                        is_struct = elem_ty in self.structs or (elem_ty and elem_ty.startswith('array<')) or (elem_ty and elem_ty in self.types) or self.sizeof(elem_ty) > 8
+                        val_temp_size = 0
+                        
+                        if is_struct:
+                            if args[1][0] == 'init_list':
+                                self._gen_init_list_recursive(args[1], elem_ty)
+                                self.text.append("    mov %rsp, %r11")
+                                self.text.append("    push %r11") # [src_addr, index]
+                                val_temp_size = self.sizeof(elem_ty)
+                            elif self.is_lvalue(args[1]):
+                                src_addr, src_ty = self.get_lvalue(args[1])
+                                if '(%rbp)' in src_addr:
+                                    src_off = int(src_addr.split('(')[0])
+                                    self.text.append(f"    lea {src_off}(%rbp), %r11")
+                                else:
+                                    self.text.append(f"    lea {src_addr}, %r11")
+                                self.text.append("    push %r11")
+                            else:
+                                ty_arg = self.gen_expr(args[1])
+                                if self._is_aggregate(ty_arg) and self._returns_by_stack(ty_arg):
+                                    self.text.append("    push %rax")
+                                else:
+                                    self.text.append(f"    sub ${elem_sz}, %rsp")
+                                    if self._is_float(ty_arg):
+                                        if ty_arg == 'float<32>': self.text.append("    movss %xmm0, (%rsp)")
+                                        else: self.text.append("    movsd %xmm0, (%rsp)")
+                                    else:
+                                        sz = self.sizeof(ty_arg)
+                                        if sz == 1: self.text.append("    mov %al, (%rsp)")
+                                        elif sz == 2: self.text.append("    mov %ax, (%rsp)")
+                                        elif sz == 4: self.text.append("    mov %eax, (%rsp)")
+                                        else: self.text.append("    mov %rax, (%rsp)")
+                                    self.text.append("    lea (%rsp), %r11")
+                                    self.text.append("    push %r11")
+                                    val_temp_size = elem_sz
+                        else:
+                            self.gen_expr(args[1])
+                            self.text.append("    push %rax") # [value, index]
+                        
+                        # 3. Grow if needed
+                        self.label_count += 1
+                        skip_grow = f".Lskip_grow_{self.label_count}"
+                        self.text.append(f"    mov {arr_ref(8)}, %r10")
+                        self.text.append(f"    cmp {arr_ref(16)}, %r10")
+                        self.text.append(f"    jl {skip_grow}")
+                        # Grow logic
+                        self.text.append(f"    mov {arr_ref(16)}, %rdi")
+                        self.text.append("    shl $1, %rdi")
+                        self.text.append("    cmp $4, %rdi")
+                        self.label_count += 1
+                        cap_ok = f".Lcap_ok_{self.label_count}"
+                        self.text.append(f"    jge {cap_ok}")
+                        self.text.append("    mov $4, %rdi")
+                        self.text.append(f"{cap_ok}:")
+                        self.text.append(f"    mov %rdi, {arr_ref(16)}")
+                        self.text.append(f"    imul ${elem_sz}, %rdi")
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi")
+                        self.text.append(f"    mov {arr_ref(16)}, %rsi")
+                        self.text.append(f"    imul ${elem_sz}, %rsi")
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call realloc@PLT")
+                        self.text.append("    add $8, %rsp")
+                        self.text.append(f"    mov %rax, {arr_ref(0)}")
+                        self.text.append(f"{skip_grow}:")
+                        
+                        # 4. Shift elements
+                        self.text.append(f"    mov {arr_ref(0)}, %r11") # data
+                        self.text.append(f"    mov {8 + val_temp_size}(%rsp), %rax") # index
+                        self.text.append(f"    mov {arr_ref(8)}, %r10") # len
+                        
+                        self.text.append("    mov %r10, %rdx")
+                        self.text.append("    sub %rax, %rdx") # len - index
+                        self.text.append(f"    imul ${elem_sz}, %rdx") # count
+                        
+                        self.text.append("    mov %rax, %rsi")
+                        self.text.append(f"    imul ${elem_sz}, %rsi")
+                        self.text.append("    add %r11, %rsi") # src = data + index*sz
+                        
+                        self.text.append("    mov %rsi, %rdi")
+                        self.text.append(f"    add ${elem_sz}, %rdi") # dest = src + sz
+                        
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call memmove@PLT")
+                        self.text.append("    add $8, %rsp")
+                        
+                        # 5. Store value at data[index]
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi")
+                        self.text.append(f"    mov {8 + val_temp_size}(%rsp), %rax")
+                        self.text.append(f"    imul ${elem_sz}, %rax")
+                        self.text.append("    add %rax, %rdi") # dest
+                        
+                        if is_struct:
+                            self.text.append("    pop %rsi") # src ptr
+                            self.text.append(f"    mov ${elem_sz}, %rdx")
+                            self.text.append("    sub $8, %rsp")
+                            self.text.append("    call memcpy@PLT")
+                            self.text.append("    add $8, %rsp")
+                            if val_temp_size: self.text.append(f"    add ${val_temp_size}, %rsp")
+                        else:
+                            self.text.append("    pop %rax") # value
+                            if elem_sz == 1: self.text.append("    mov %al, (%rdi)")
+                            elif elem_sz == 2: self.text.append("    mov %ax, (%rdi)")
+                            elif elem_sz == 4: self.text.append("    mov %eax, (%rdi)")
+                            else: self.text.append("    mov %rax, (%rdi)")
+                        
+                        self.text.append("    add $8, %rsp") # pop index
+                        self.text.append(f"    incq {arr_ref(8)}")
+                        return 'void'
+
+                    elif method == 'insertItems':
+                        # args[0]: index, args[1]: items
+                        # 1. Evaluate index
+                        self.gen_expr(args[0])
+                        self.text.append("    push %rax") # [index]
+                        
+                        is_init_list = args[1][0] == 'init_list'
+                        items_stack_sz = 0
+                        if is_init_list:
+                            items = args[1][1]
+                            num_items = len(items)
+                            total_items_sz = num_items * elem_sz
+                            # Allocate contiguous buffer on stack
+                            alloc_sz = total_items_sz
+                            if alloc_sz % 16 != 0: alloc_sz += 16 - (alloc_sz % 16)
+                            self.text.append(f"    sub ${alloc_sz}, %rsp")
+                            self.text.append("    push %rsp") # [buf_ptr, index]
+                            
+                            for i, item in enumerate(items):
+                                # Materialize item
+                                res_ty = self.gen_expr(item)
+                                # If struct, rax=ptr. If primitive, rax=val.
+                                self.text.append("    mov 0(%rsp), %r11") # buf_ptr
+                                off = i * elem_sz
+                                if self._is_aggregate(elem_ty):
+                                    self.text.append("    mov %rax, %rsi") # src
+                                    self.text.append(f"    lea {off}(%r11), %rdi") # dest
+                                    self.text.append(f"    mov ${elem_sz}, %rdx")
+                                    self.text.append("    sub $8, %rsp") # align
+                                    self.text.append("    call memcpy@PLT")
+                                    self.text.append("    add $8, %rsp")
+                                else:
+                                    if elem_sz == 1: self.text.append(f"    mov %al, {off}(%r11)")
+                                    elif elem_sz == 2: self.text.append(f"    mov %ax, {off}(%r11)")
+                                    elif elem_sz == 4: self.text.append(f"    mov %eax, {off}(%r11)")
+                                    else: self.text.append(f"    mov %rax, {off}(%r11)")
+                            
+                            # Stack: [buf_ptr, index]
+                            self.text.append(f"    mov ${num_items}, %r14")
+                            self.text.append("    mov (%rsp), %r15")
+                            items_stack_sz = alloc_sz
+                            idx_stack_off = 8 + alloc_sz
+                        else:
+                            # args[1] is an array expression
+                            self.gen_expr(args[1])
+                            # rax=ptr, rdx=len, rcx=cap
+                            self.text.append("    push %rax") # [items_ptr, index]
+                            self.text.append("    push %rdx") # [items_len, items_ptr, index]
+                            self.text.append("    mov (%rsp), %r14") # items_len
+                            self.text.append("    mov 8(%rsp), %r15") # items_ptr
+                            idx_stack_off = 16
+                        
+                        # Save r14, r15
+                        self.text.append("    push %r14")
+                        self.text.append("    push %r15")
+                        actual_idx_off = idx_stack_off + 16
+                        
+                        # 2. Ensure capacity
+                        self.text.append(f"    mov {arr_ref(8)}, %rax") # len
+                        self.text.append("    add %r14, %rax") # required = len + num_items
+                        
+                        self.label_count += 1
+                        skip_grow = f".Lskip_grow_{self.label_count}"
+                        self.text.append(f"    cmp {arr_ref(16)}, %rax")
+                        self.text.append(f"    jle {skip_grow}")
+                        
+                        self.text.append(f"    mov %rax, {arr_ref(16)}")
+                        self.text.append(f"    imul ${elem_sz}, %rax")
+                        self.text.append("    mov %rax, %rsi") # new size
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi") # old ptr
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call realloc@PLT")
+                        self.text.append("    add $8, %rsp")
+                        self.text.append(f"    mov %rax, {arr_ref(0)}")
+                        self.text.append(f"{skip_grow}:")
+                        
+                        # Restore r14, r15
+                        self.text.append("    mov (%rsp), %r15")
+                        self.text.append("    mov 8(%rsp), %r14")
+                        
+                        # 3. Shift elements
+                        self.text.append(f"    mov {arr_ref(0)}, %r11") # data
+                        self.text.append(f"    mov {actual_idx_off}(%rsp), %rax") # index
+                        self.text.append(f"    mov {arr_ref(8)}, %r10") # len
+                        
+                        self.text.append("    mov %r10, %rdx")
+                        self.text.append("    sub %rax, %rdx") # len - index
+                        self.text.append(f"    imul ${elem_sz}, %rdx") # count
+                        
+                        self.text.append("    mov %rax, %rsi")
+                        self.text.append(f"    imul ${elem_sz}, %rsi")
+                        self.text.append("    add %r11, %rsi") # src = data + index*sz
+                        
+                        self.text.append("    mov %rsi, %rdi")
+                        self.text.append("    mov %r14, %rcx")
+                        self.text.append(f"    imul ${elem_sz}, %rcx")
+                        self.text.append("    add %rcx, %rdi") # dest = src + num_items*sz
+                        
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call memmove@PLT")
+                        self.text.append("    add $8, %rsp")
+                        
+                        # 4. Copy items
+                        self.text.append("    mov (%rsp), %rsi") # restore items_ptr
+                        self.text.append("    mov 8(%rsp), %r14") # restore num_items
+                        self.text.append(f"    mov {arr_ref(0)}, %rdi") # data
+                        self.text.append(f"    mov {actual_idx_off}(%rsp), %rax") # index
+                        self.text.append(f"    imul ${elem_sz}, %rax")
+                        self.text.append("    add %rax, %rdi") # dest = data + index*sz
+                        self.text.append("    mov %r14, %rdx")
+                        self.text.append(f"    imul ${elem_sz}, %rdx") # count = num_items * sz
+                        
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call memcpy@PLT")
+                        self.text.append("    add $8, %rsp")
+                        
+                        # 5. Update len
+                        self.text.append("    mov 8(%rsp), %rax") # num_items
+                        self.text.append(f"    add %rax, {arr_ref(8)}")
+                        
+                        # Cleanup stack
+                        self.text.append(f"    add ${actual_idx_off + 8}, %rsp")
+                        
+                        return 'void'
+                    
                     elif method == 'pop':
                         # Decrement length, return data[new_len]
                         # For pop, we return by value if element size <= 8, else by pointer (to a copy)

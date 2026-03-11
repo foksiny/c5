@@ -606,6 +606,12 @@ void main() {
     // Push a new element to the end
     arr.push(6);
 
+    // Insert an element at a specific index
+    arr.insert(0, 0); // Insert 0 at index 0
+
+    // Insert multiple items at a specific index
+    arr.insertItems(2, {10, 20, 30});
+
     // Pop and return the last element
     int<32> last = arr.pop();
 
@@ -766,7 +772,7 @@ Global arrays are stored in the `.data` section and are zero-initialized if no i
 | **Allocation** | Stack (or global data segment) | Heap |
 | **Size** | Fixed at compile time | Dynamic, can grow/shrink |
 | **Length tracking** | No (manual) | Yes (`length()` method) |
-| **Methods** | None (raw array) | `push`, `pop`, `clear`, `length` |
+| **Methods** | None (raw array) | `push`, `pop`, `clear`, `length`, `insert`, `insertItems` |
 | **Memory layout** | Contiguous block | Header (ptr, len, cap) + heap data |
 | **Use case** | Small, known-size collections | Dynamic collections that change size |
 | **Performance** | No overhead, direct access | Some overhead for bounds checks and resizing |

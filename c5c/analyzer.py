@@ -287,7 +287,8 @@ class SemanticAnalyzer:
                         return 'string'
                     if base_ty.startswith('array<') and method == 'pop':
                         return base_ty[6:-1]
-                    if base_ty.startswith('array<'): return 'void'
+                    if base_ty.startswith('array<') and (method == 'push' or method == 'insert' or method == 'insertItems' or method == 'clear'):
+                        return 'void'
             
             if target[0] == 'id':
                 name = target[1]
