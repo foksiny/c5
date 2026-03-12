@@ -300,8 +300,39 @@ def main():
                 sys.exit(res.returncode)
             print(f"Success! Shared library ready at: {final_out}")
             
+        # Copy headers to output folder if using build system
+        if 'config' in locals() and config.get('h_files'):
+            out_dir = os.path.dirname(final_out)
+            for i, h_file in enumerate(config['h_files']):
+                src_h = os.path.join(dir_path, h_file)
+                if os.path.exists(src_h):
+                    if i == 0:
+                        lib_base = os.path.splitext(os.path.basename(final_out))[0]
+                        dest_name = lib_base + ".c5h"
+                        
+                        # Prepend libinclude for the main header
+                        lib_file = os.path.basename(final_out)
+                        lib_directive = f"libinclude <{lib_file}> #{lib_type}\n"
+                        
+                        with open(src_h, 'r') as f:
+                            content = f.read()
+                        
+                        if lib_directive.strip() not in content:
+                            content = lib_directive + content
+                        
+                        dst_h = os.path.join(out_dir, dest_name)
+                        with open(dst_h, 'w') as f:
+                            f.write(content)
+                        print(f"Saved header: {dest_name} to {out_dir} (with libinclude)")
+                    else:
+                        dest_name = os.path.basename(h_file)
+                        dst_h = os.path.join(out_dir, dest_name)
+                        if os.path.abspath(src_h) != os.path.abspath(dst_h):
+                            shutil.copy2(src_h, dst_h)
+                            print(f"Saved header: {dest_name} to {out_dir}")
+            
         # Installation logic for build system
-        if input_files[0].endswith(".c5b") and 'config' in locals():
+        if 'config' in locals():
             install_opt = config.get('install', 'no')
             do_install = False
             if install_opt == 'ask':
@@ -321,12 +352,34 @@ def main():
                 shutil.copy2(final_out, dest_lib)
                 
                 # Copy header files
-                for h_file in config.get('h_files', []):
+                h_files = config.get('h_files', [])
+                for i, h_file in enumerate(h_files):
                     src_h = os.path.join(dir_path, h_file)
                     if os.path.exists(src_h):
-                        dest_h = os.path.join(global_path, os.path.basename(h_file))
-                        shutil.copy2(src_h, dest_h)
-                        print(f"Installed header: {os.path.basename(h_file)}")
+                        # If this is the main header (first one), rename it to match the library name
+                        if i == 0:
+                            lib_base = os.path.splitext(os.path.basename(final_out))[0]
+                            dest_name = lib_base + ".c5h"
+                            
+                            # Prepend libinclude for the main header
+                            lib_file = os.path.basename(final_out)
+                            lib_directive = f"libinclude <{lib_file}> #{lib_type}\n"
+                            
+                            with open(src_h, 'r') as f:
+                                content = f.read()
+                            
+                            if lib_directive.strip() not in content:
+                                content = lib_directive + content
+                            
+                            dest_h = os.path.join(global_path, dest_name)
+                            with open(dest_h, 'w') as f:
+                                f.write(content)
+                            print(f"Installed header: {dest_name} (with libinclude)")
+                        else:
+                            dest_name = os.path.basename(h_file)
+                            dest_h = os.path.join(global_path, dest_name)
+                            shutil.copy2(src_h, dest_h)
+                            print(f"Installed header: {dest_name}")
                 
                 # Copy outfolder if requested and noutfolder is False
                 if out_folder and not config.get('noutfolder', False):

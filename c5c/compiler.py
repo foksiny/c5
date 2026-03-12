@@ -256,7 +256,7 @@ def _process_includes(ast, dir_path, include_paths, global_path, processed_files
             
             # Apply namespacing if needed
             if use_namespaces:
-                namespace = os.path.splitext(fname)[0]
+                namespace = os.path.splitext(os.path.basename(fname))[0]
                 final_inc_ast = []
                 for n in res_ast:
                     if isinstance(n, tuple):
