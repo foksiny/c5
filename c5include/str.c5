@@ -1,6 +1,6 @@
 // this won't be used, only if the str library is updated and needs to be recompiled.
 
-unsigned int<1> isdigit(string s) {
+const unsigned int<1> isdigit(string s) {
     array<char> nums = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
     char c = '\0';
     for (int i = 0; i < s.length(); i = i + 1) {
@@ -19,7 +19,7 @@ unsigned int<1> isdigit(string s) {
     return 1;
 }
 
-unsigned int<1> streq(string a, string b) {
+const unsigned int<1> streq(string a, string b) {
     if (a.length() != b.length()) {
         return 0;
     }
@@ -35,7 +35,7 @@ string join_c(string s, char c) {
     return s + (string)c;
 }
 
-unsigned int<1> isalnum(string s) {
+const unsigned int<1> isalnum(string s) {
     array<char> nums    = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
     array<char> letters = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
                         'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
@@ -76,3 +76,32 @@ unsigned int<1> isalnum(string s) {
     }
     return 1;
 }
+
+const unsigned int<1> startswith(string str, string txt) {
+    if (str.length() < txt.length()) {
+        return 0;
+    }
+
+    for (int i = 0; i < txt.length(); i++) {
+        if (str[i] != txt[i]) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+const unsigned int<1> endswith(string str, string txt) {
+    if (str.length() < txt.length()) {
+        return 0;
+    }
+
+    for (int i = 0; i < txt.length(); i++) {
+        if (str[str.length() - i] != txt[txt.length() - i]) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+

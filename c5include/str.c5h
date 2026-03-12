@@ -2,10 +2,14 @@ detect once;
 
 libinclude <str.a> #static
 
-unsigned int<1> isdigit(string s);
+const unsigned int<1> isdigit(string s);
 
-unsigned int<1> streq(string a, string b);
+const unsigned int<1> streq(string a, string b);
 
 string join_c(string s, char c);
 
-unsigned int<1> isalnum(string s);
+const unsigned int<1> isalnum(string s);
+
+const unsigned int<1> startswith(string str, string txt);
+
+const unsigned int<1> endswith(string str, string txt);
