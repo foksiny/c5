@@ -423,6 +423,22 @@ class Parser:
         self.consume('RBRACE')
         return ('for_stmt', init, cond, inc, body, loc)
 
+    def parse_with_stmt(self):
+        loc = self._loc()
+        self.consume('WITH')
+        self.consume('LPAREN')
+        expr = self.parse_expr()
+        self.consume('AS')
+        ty = self.parse_type()
+        name = self.consume('ID').value
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        body = []
+        while self.peek().type != 'RBRACE':
+            body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        return ('with_stmt', expr, ty, name, body, loc)
+
     def parse_foreach_stmt(self):
         loc = self._loc()
         self.consume('FOREACH')
@@ -500,6 +516,8 @@ class Parser:
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
+        if self.peek().type == 'WITH':
+            return self.parse_with_stmt()
         if self.peek().type == 'SWITCH':
             return self.parse_switch_stmt()
         if self.peek().type == 'WHILE':
@@ -799,12 +817,29 @@ class Parser:
             return ('unary', op, target, loc)
         return self.parse_primary()
 
+    def parse_syscall_expr(self):
+        loc = self._loc()
+        self.consume('SYSCALL')
+        self.consume('LPAREN')
+        args = []
+        if self.peek().type != 'RPAREN':
+            while True:
+                args.append(self.parse_expr())
+                if self.peek().type == 'COMMA':
+                    self.consume('COMMA')
+                else:
+                    break
+        self.consume('RPAREN')
+        return ('syscall', args, loc)
+
     def parse_primary(self):
         loc = self._loc()
         if self.peek().type == 'LPAREN':
             self.consume('LPAREN')
             target = self.parse_expr()
             self.consume('RPAREN')
+        elif self.peek().type == 'SYSCALL':
+            return self.parse_syscall_expr()
         elif self.peek().type == 'FLOAT':
             target = ('float', float(self.consume('FLOAT').value), loc)
         elif self.peek().type == 'NUMBER':

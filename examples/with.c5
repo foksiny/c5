@@ -1,0 +1,7 @@
+include <std.c5h>
+
+void main() {
+    with ((int<32>)10 + 20 as int<32> result) { // result is only avaliable inside this 'with' scope
+        std::printf("%d\n", result);
+    }
+}

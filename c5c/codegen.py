@@ -1187,6 +1187,40 @@ __c5_str_replace:
             self.gen_expr(inc)
             self.text.append(f"    jmp {cond_label}")
             self.text.append(f"{end_label}:")
+        elif node[0] == 'with_stmt':
+            # with (expr as ty name) { body }
+            expr, ty, name, body = node[1], node[2], node[3], node[4]
+            
+            # Allocate space for the variable
+            sz = self.sizeof(ty)
+            align = sz if sz < 8 else 8
+            if abs(self.local_var_offset) % align != 0:
+                self.local_var_offset -= align - (abs(self.local_var_offset) % align)
+            self.local_var_offset -= sz
+            self.local_vars[name] = (self.local_var_offset, ty)
+            
+            # Evaluate expression and store in the variable
+            ret_ty = self.gen_expr(expr)
+            if self._is_float(ty):
+                if ty == 'float<32>':
+                    if ret_ty == 'float' or ret_ty == 'float<64>':
+                        self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                    self.text.append(f"    movss %xmm0, {self.local_var_offset}(%rbp)")
+                else:
+                    if ret_ty == 'float<32>':
+                        self.text.append("    cvtss2sd %xmm0, %xmm0")
+                    self.text.append(f"    movsd %xmm0, {self.local_var_offset}(%rbp)")
+            else:
+                sz = self.sizeof(ty)
+                if sz == 1: self.text.append(f"    mov %al, {self.local_var_offset}(%rbp)")
+                elif sz == 2: self.text.append(f"    mov %ax, {self.local_var_offset}(%rbp)")
+                elif sz == 4: self.text.append(f"    mov %eax, {self.local_var_offset}(%rbp)")
+                else: self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+            
+            # Execute body
+            for stmt in body:
+                self.gen_stmt(stmt)
+
         elif node[0] == 'foreach_stmt':
             # foreach (index_var, value_var in array_expr) { body }
             index_var, value_var, array_expr, body = node[1], node[2], node[3], node[4]
@@ -1666,6 +1700,46 @@ __c5_str_replace:
             
         return target_ty
 
+    def gen_syscall(self, node):
+        args = node[1]
+        if not args:
+            raise Exception("syscall requires at least two arguments: arg_count and rax_value")
+        
+        # First argument is the number of registers to use (0 to 6)
+        # We need to evaluate it to a constant if possible, but let's just generate code for now
+        # Actually, it's better if it's a constant.
+        num_args_expr = args[0]
+        if num_args_expr[0] != 'number':
+            raise Exception("First argument of syscall must be a constant integer (number of registers)")
+        num_args = num_args_expr[1]
+        
+        # Second argument is the syscall number (rax)
+        rax_expr = args[1]
+        
+        # Following arguments are passed in rdi, rsi, rdx, r10, r8, r9
+        syscall_regs = ["%rdi", "%rsi", "%rdx", "%r10", "%r8", "%r9"]
+        
+        # Push arguments in reverse order to evaluate them without clobbering
+        # Actually, we can evaluate each and push.
+        
+        # Evaluate syscall arguments (arg1 to argN)
+        for i in range(num_args):
+            if i + 2 < len(args):
+                arg_expr = args[i + 2]
+                self.gen_expr(arg_expr)
+                self.text.append("    push %rax")
+        
+        # Evaluate rax
+        self.gen_expr(rax_expr)
+        # rax is now in %rax
+        
+        # Pop arguments into registers
+        for i in range(num_args - 1, -1, -1):
+            self.text.append(f"    pop {syscall_regs[i]}")
+            
+        self.text.append("    syscall")
+        return "int"
+
     def gen_expr(self, node):
         if node[0] == 'number':
             self.text.append(f"    mov ${node[1]}, %rax")
@@ -1684,6 +1758,8 @@ __c5_str_replace:
             label = self.get_string_label(node[1])
             self.text.append(f"    lea {label}(%rip), %rax")
             return "string"
+        elif node[0] == 'syscall':
+            return self.gen_syscall(node)
         elif node[0] == 'namespace_access' and node[1] in self.enums:
             base, name = node[1], node[2]
             val = self.enums[base][name]

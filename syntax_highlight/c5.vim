@@ -8,10 +8,10 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword c5Keyword let const macro type fnct
+syn keyword c5Keyword let const macro type fnct as syscall
 syn keyword c5Include include libinclude
 syn match c5PreProc "\v#[a-zA-Z_]+"
-syn keyword c5Conditional if else switch case default
+syn keyword c5Conditional if else switch case default with
 syn keyword c5Repeat while do for foreach in break
 syn keyword c5Statement return try catch
 syn keyword c5Structure struct enum

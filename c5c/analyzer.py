@@ -163,6 +163,7 @@ class SemanticAnalyzer:
         if tag == 'string': return "string"
         if tag == 'char': return "char"
         if tag == 'null': return "void*"
+        if tag == 'syscall': return "int"
         if tag == 'id':
             name = node[1]
             for scope in reversed(self.scopes):
@@ -1055,6 +1056,34 @@ class SemanticAnalyzer:
         elif tag == 'array_access':
             self._analyze_node(node[1])
             self._analyze_node(node[2])
+
+        elif tag == 'with_stmt':
+            # with (expr as ty name) { body }
+            expr, ty, name, body = node[1], node[2], node[3], node[4]
+            
+            # Analyze expression
+            self._analyze_node(expr)
+            expr_ty = self._get_type(expr)
+            
+            # Check compatibility
+            if not self._types_compatible(ty, expr_ty):
+                self.add_error("E002", f"Cannot assign {expr_ty} to {ty} in with statement", loc)
+            
+            # Create new scope and add variable
+            self.scopes.append({})
+            self.scopes[-1][name] = ty
+            self.var_locs[name] = loc
+            
+            # Analyze body
+            for s in body:
+                self._analyze_node(s)
+            
+            # Check for unused variable
+            if name not in self.used_vars:
+                self.add_warning("W001", name, loc)
+                
+            # Pop scope
+            self.scopes.pop()
 
         elif tag == 'foreach_stmt':
             # foreach (index_var, value_var in array_expr) { body }

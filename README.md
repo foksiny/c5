@@ -438,6 +438,27 @@ The `foreach` loop automatically:
 - Iterates from index 0 to length-1
 - Provides both the index and value in each iteration
 
+#### With Statements
+The `with` statement evaluates an expression and binds it to a name, which is only available within the statement's block. This is useful for managing scope and avoiding variable name pollution.
+
+```c
+include <std.c5h>
+
+void main() {
+    with (10 + 20 as int<32> result) {
+        std::printf("Result: %d\n", result);
+    }
+    // 'result' is not available here
+}
+```
+
+**Syntax:** `with (expression as type name) { body }`
+
+- `expression`: The expression to evaluate
+- `type`: The explicit type for the bound variable
+- `name`: The name of the variable to bind the expression result to
+- `body`: The block of code where the variable is available
+
 #### Switch-Case Statements
 
 The `switch` statement allows multi-way branching based on an integer or enum expression:
@@ -1495,6 +1516,30 @@ void main() {
 - Casts can bypass type safety and may lead to undefined behavior if used incorrectly (e.g., casting a pointer to an integer of insufficient size).
 - The compiler will still perform some checks (e.g., ensuring the target type is known).
 - For narrowing conversions (e.g., `int<64>` to `int<8>`), the value is truncated according to the target type's signedness.
+
+### 22. Syscall Built-in
+
+C5 provides a built-in `syscall` function to perform direct system calls on x86_64 Linux.
+
+**Syntax:**
+```c
+int result = syscall(num_args, rax_value, arg1, arg2, ..., argN);
+```
+
+- `num_args`: The number of registers to use for arguments after `rax` (0 to 6). This must be a constant integer literal.
+- `rax_value`: The syscall number (placed in `%rax`).
+- `arg1` to `argN`: The arguments for the syscall (placed in `%rdi`, `%rsi`, `%rdx`, `%r10`, `%r8`, `%r9` respectively).
+
+**Example:**
+```c
+include <std.c5h>
+
+void main() {
+    // Syscall 1 is 'write'
+    // args: 3 (num registers), 1 (rax), 1 (rdi: stdout), "Hello\n" (rsi: buf), 6 (rdx: count)
+    syscall(3, 1, 1, "Hello\n", 6);
+}
+```
 
 ---
 
