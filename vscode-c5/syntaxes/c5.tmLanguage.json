@@ -1,0 +1,121 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "C5",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#functions" },
+        { "include": "#namespaces" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.c5",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.block.c5",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.c5",
+                    "match": "\\b(if|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch)\\b"
+                },
+                {
+                    "name": "keyword.other.c5",
+                    "match": "\\b(let|const|macro|type|fnct|as|syscall|sizeof)\\b"
+                },
+                {
+                    "name": "keyword.control.directive.c5",
+                    "match": "\\b(include|libinclude|detect|once)\\b"
+                },
+                {
+                    "name": "keyword.control.preprocessor.c5",
+                    "match": "#[a-zA-Z_]+"
+                },
+                {
+                    "name": "storage.type.struct.c5",
+                    "match": "\\b(struct|enum)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.primitive.c5",
+                    "match": "\\b(void|int|float|char|string|array|signed|unsigned)\\b"
+                },
+                {
+                    "name": "storage.type.parameterized.c5",
+                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*<",
+                    "captures": {
+                        "0": { "name": "storage.type.c5" }
+                    }
+                },
+                {
+                    "name": "constant.language.c5",
+                    "match": "\\bNULL\\b"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.c5",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        { "name": "constant.character.escape.c5", "match": "\\\\." }
+                    ]
+                },
+                {
+                    "name": "string.quoted.single.c5",
+                    "begin": "'",
+                    "end": "'",
+                    "patterns": [
+                        { "name": "constant.character.escape.c5", "match": "\\\\." }
+                    ]
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                { "name": "constant.numeric.hex.c5", "match": "\\b0x[0-9a-fA-F]+\\b" },
+                { "name": "constant.numeric.float.c5", "match": "\\b\\d+\\.\\d+\\b" },
+                { "name": "constant.numeric.integer.c5", "match": "\\b\\d+\\b" }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                { "name": "keyword.operator.c5", "match": "\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\^=|\\|=|<<=|>>=|==|!=|<=|>=|&&|\\|\\||<<|>>|->|\\.\\.\\.|[\\+\\-\\*/%=\\!<>\\&\\|\\^\\~\\.]" }
+            ]
+        },
+        "functions": {
+            "patterns": [
+                {
+                    "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+                    "name": "entity.name.function.c5"
+                }
+            ]
+        },
+        "namespaces": {
+            "patterns": [
+                {
+                    "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)::",
+                    "name": "entity.name.namespace.c5"
+                }
+            ]
+        }
+    },
+    "scopeName": "source.c5"
+}

@@ -5,7 +5,7 @@ macro add(a, b) {
 }
 
 void main() {
-    int<32> result = add(10, 20);
+    int<32> result = (int<32>)add(10, 20);
 
     std::printf("%d\n", result);
 }

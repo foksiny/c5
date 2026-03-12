@@ -1,0 +1,109 @@
+{
+    "name": "c5-support",
+    "displayName": "C5 Support",
+    "description": "Syntax highlighting and error handling for the C5 programming language",
+    "version": "0.1.0",
+    "publisher": "foksiny",
+    "icon": "logo.png",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "c5",
+                "aliases": [
+                    "C5",
+                    "c5"
+                ],
+                "extensions": [
+                    ".c5"
+                ],
+                "icon": {
+                    "light": "./icons/c5.png",
+                    "dark": "./icons/c5.png"
+                },
+                "configuration": "./language-configuration.json"
+            },
+            {
+                "id": "c5h",
+                "aliases": [
+                    "C5H",
+                    "c5h"
+                ],
+                "extensions": [
+                    ".c5h"
+                ],
+                "icon": {
+                    "light": "./icons/c5h.png",
+                    "dark": "./icons/c5h.png"
+                },
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "c5",
+                "scopeName": "source.c5",
+                "path": "./syntaxes/c5.tmLanguage.json"
+            },
+            {
+                "language": "c5h",
+                "scopeName": "source.c5",
+                "path": "./syntaxes/c5.tmLanguage.json"
+            }
+        ],
+        "semanticTokenScopes": [
+            {
+                "language": "c5",
+                "scopes": {
+                    "type": ["storage.type.c5"],
+                    "struct": ["storage.type.struct.c5"],
+                    "enum": ["storage.type.enum.c5"],
+                    "function": ["entity.name.function.c5"],
+                    "namespace": ["entity.name.namespace.c5"]
+                }
+            },
+            {
+                "language": "c5h",
+                "scopes": {
+                    "type": ["storage.type.c5"],
+                    "struct": ["storage.type.struct.c5"],
+                    "enum": ["storage.type.enum.c5"],
+                    "function": ["entity.name.function.c5"],
+                    "namespace": ["entity.name.namespace.c5"]
+                }
+            }
+        ],
+        "commands": [
+            {
+                "command": "c5.buildProject",
+                "title": "Build C5 Project",
+                "icon": "$(play)"
+            }
+        ],
+        "menus": {
+            "editor/title": [
+                {
+                    "when": "resourceExtname == .c5 || resourceExtname == .c5h || resourceExtname == .c5b",
+                    "command": "c5.buildProject",
+                    "group": "navigation"
+                }
+            ]
+        }
+    },
+    "activationEvents": [
+        "onLanguage:c5",
+        "workspaceContains:build.c5b"
+    ],
+    "main": "./extension.js",
+    "dependencies": {
+        "vscode-languageclient": "^8.0.2"
+    },
+    "scripts": {
+        "postinstall": "echo 'Ready to use!'"
+    }
+}

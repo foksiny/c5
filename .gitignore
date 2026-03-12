@@ -1,5 +1,60 @@
+# Compiled binaries and object files
 *.s
+*.a
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Python
 *.egg-info
 */__pycache__/
-trash
-*.a
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.nyc_output
+
+# Node.js / VS Code Extension
+vscode-c5/node_modules/
+vscode-c5/package-lock.json
+vscode-c5/out/
+vscode-c5/dist/
+vscode-c5/.extension/
+vscode-c5/*.vsix
+vscode-c5/coverage/
+vscode-c5/.nyc_output/
+vscode-c5/.vscode/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Temporary / trash
+trash/
+tmp/
+temp/

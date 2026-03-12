@@ -1,5 +1,9 @@
 # C5 Programming Language
 
+<div align="center">
+  <img src="logo/logo.svg" alt="C5 Logo" width="200">
+</div>
+
 C5 is a high-performance, statically-typed programming language that compiles directly to x86_64 GAS (GNU Assembler). It is designed to be lightweight, memory-aware, and seamlessly compatible with the C ABI.
 
 > [!NOTE]
