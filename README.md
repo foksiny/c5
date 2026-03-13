@@ -16,7 +16,7 @@ C5 is a high-performance, statically-typed programming language that compiles di
 - **Automatic Namespacing**: Included headers (like `std.c5h`) are partitioned into namespaces to avoid symbol clobbering.
 - **Smart String Handling**: Native support for string concatenation (`+`) and substring removal (`-`).
 - **Pointer Arithmetic**: Full support for raw memory manipulation with automatic type scaling.
-- **Modern CLI**: Compile to executables with `-o` or inspect assembly with `-S`.
+- **Modern CLI**: Compile to executables with `-o`, inspect assembly with `-S`, or analyze for errors with `-a`.
 
 ## 🛠️ Getting Started
 
@@ -45,6 +45,10 @@ c5c mylib.c5 --lib static -o mylib
 
 # Compile as a dynamic/shared library
 c5c mylib.c5 --lib dynamic -o mylib
+
+# Analyze source files for errors and warnings without compiling
+c5c main.c5 -a
+c5c main.c5 --analyze
 ```
 
 ## 📚 Library System
@@ -202,6 +206,81 @@ When you use `include <file.c5h>`, the compiler searches in this order:
 2. Custom paths provided via `-I`.
 3. Project-local `c5include/` directory.
 4. Global `~/.c5/include/` directory (populated via `c5c --setup-libs`).
+
+---
+
+## 🔍 Analyze Mode
+
+The `--analyze` (or `-a`) flag allows you to check your source files for errors and warnings without actually compiling them. This is useful for:
+
+- **Quick error checking**: Verify your code compiles without generating any output files
+- **CI/CD integration**: Run analysis as part of your build pipeline
+- **IDE integration**: Get real-time feedback in your editor
+- **Code review**: Check for issues before committing changes
+
+### Usage
+
+```bash
+# Analyze a single file
+c5c main.c5 -a
+
+# Analyze multiple files
+c5c main.c5 utils.c5 --analyze
+
+# Analyze with custom include paths
+c5c main.c5 -I ./headers -a
+
+# Analyze a library
+c5c mylib.c5 --lib static -a
+```
+
+### What It Checks
+
+The analyze mode performs the same semantic analysis as the full compiler, including:
+
+- **Syntax errors**: Invalid language constructs
+- **Type errors**: Type mismatches and invalid operations
+- **Undefined symbols**: References to undeclared variables or functions
+- **Dead code**: Unused variables and functions (warnings)
+- **Missing entry point**: Ensures `main()` is defined (for programs)
+- **Const violations**: Attempts to modify const variables
+
+### Output
+
+The analyze mode will:
+
+1. Print all errors and warnings with source location information
+2. Exit with code `1` if any errors are found
+3. Exit with code `0` if analysis passes (warnings are allowed)
+
+Example output:
+```
+Analyzing main.c5...
+
+C5 COMPILER: 1 ERROR(S) FOUND
+main.c5:5:10: error: Undefined symbol [x]
+>   int y = x + 1;
+          ^
+
+Tip: The identifier was not found in any visible scope.
+
+Analysis failed with 1 error(s) and 0 warning(s)
+```
+
+### Combining with Other Flags
+
+The analyze mode can be combined with other flags:
+
+```bash
+# Analyze with custom include paths
+c5c main.c5 -I ./headers -a
+
+# Analyze a build file project
+c5c --build . -a
+
+# Analyze a library
+c5c mylib.c5 --lib dynamic -a
+```
 
 ---
 

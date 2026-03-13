@@ -426,3 +426,130 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
     asm = cg.generate(optimized_ast)
     return asm, lib_includes
+
+
+def analyze_file(filepath, include_paths=None, is_library=False):
+    """Analyze a single source file for errors and warnings without compiling.
+    
+    This performs lexing, parsing, include processing, macro expansion,
+    and semantic analysis, but skips code generation.
+    
+    Returns:
+        tuple: (has_errors, error_count, warning_count)
+    """
+    if include_paths is None: include_paths = []
+    
+    code = open(filepath).read()
+    tokens = lex(code)
+    parser = Parser(tokens)
+    ast = parser.parse_program()
+    
+    dir_path = os.path.dirname(os.path.abspath(filepath))
+    global_path = os.path.expanduser("~/.c5/include")
+    
+    new_ast, library_funcs, library_vars, lib_includes = _process_includes(
+        ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
+    )
+    
+    # Collect and expand macros
+    macros = _collect_macros(new_ast)
+    expanded_ast = _expand_macros(new_ast, macros)
+    
+    # Remove macro definitions from AST after expansion
+    pre_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    
+    final_ast = pre_ast
+            
+    from .analyzer import SemanticAnalyzer
+    analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
+    analyzer.library_funcs = library_funcs
+    analyzer.library_vars = library_vars
+    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library, exit_on_error=False)
+    
+    return len(analyzer.errors) > 0, len(analyzer.errors), len(analyzer.warnings)
+
+
+def analyze_files(filepaths, include_paths=None, is_library=False):
+    """Analyze multiple source files for errors and warnings without compiling.
+    
+    This performs lexing, parsing, include processing, macro expansion,
+    and semantic analysis, but skips code generation.
+    
+    Returns:
+        tuple: (has_errors, error_count, warning_count)
+    """
+    if include_paths is None: include_paths = []
+    
+    combined_ast = []
+    all_code = ""
+    primary_file = filepaths[0]
+    library_funcs = set()  # Track functions from non-primary files
+    library_vars = set()   # Track variables from library files (no dead code warnings)
+    lib_includes = []      # Collect library linking directives
+    use_namespaces = True
+    processed_files = set()
+    
+    for filepath in filepaths:
+        code = open(filepath).read()
+        all_code += f"\n// File: {filepath}\n" + code
+        
+        tokens = lex(code)
+        parser = Parser(tokens)
+        ast = parser.parse_program()
+        
+        dir_path = os.path.dirname(os.path.abspath(filepath))
+        global_path = os.path.expanduser("~/.c5/include")
+        
+        # If this is not the primary file, track its functions as library functions
+        is_primary = (filepath == primary_file)
+        
+        res_ast, res_funcs, res_vars, res_libs = _process_includes(
+            ast, dir_path, include_paths, global_path, processed_files, use_namespaces, os.path.abspath(filepath)
+        )
+        
+        if not is_primary:
+            namespace = os.path.splitext(os.path.basename(filepath))[0]
+            # Auto-namespace the AST from this secondary file
+            namespaced_res_ast = []
+            for node in res_ast:
+                if isinstance(node, tuple):
+                    namespaced_res_ast.append(_namespace_types_in_node(node, namespace))
+                else:
+                    namespaced_res_ast.append(node)
+            res_ast = namespaced_res_ast
+            
+            # Also namespace tracked funcs/vars so they match
+            library_funcs.update({f"{namespace}::{f}" for f in res_funcs})
+            library_vars.update({f"{namespace}::{v}" for v in res_vars})
+            
+            # Also track functions and variables from this non-primary file itself (namespaced)
+            for node in ast:
+                if isinstance(node, tuple):
+                    if node[0] == 'func':
+                        library_funcs.add(f"{namespace}::{node[2]}")
+                    elif node[0] == 'pub_var':
+                        library_vars.add(f"{namespace}::{node[2]}")
+        else:
+            # For primary file, only track funcs/vars from its includes
+            library_funcs.update(res_funcs)
+            library_vars.update(res_vars)
+
+        lib_includes.extend(res_libs)
+        combined_ast.extend(res_ast)
+    
+    # Collect and expand macros
+    macros = _collect_macros(combined_ast)
+    expanded_ast = _expand_macros(combined_ast, macros)
+    
+    # Remove macro definitions from AST after expansion
+    pre_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
+    
+    final_ast = pre_ast
+            
+    from .analyzer import SemanticAnalyzer
+    analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
+    analyzer.library_funcs = library_funcs
+    analyzer.library_vars = library_vars
+    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library, exit_on_error=False)
+    
+    return len(analyzer.errors) > 0, len(analyzer.errors), len(analyzer.warnings)

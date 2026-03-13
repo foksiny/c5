@@ -4,7 +4,7 @@ import subprocess
 import argparse
 import shutil
 import tempfile
-from .compiler import compile_file, compile_files
+from .compiler import compile_file, compile_files, analyze_file, analyze_files
 
 def parse_build_file(content):
     config = {
@@ -54,6 +54,7 @@ def main():
     parser.add_argument("--setup-libs", action="store_true", help="Setup global C5 libraries")
     parser.add_argument("--lib", choices=['dynamic', 'static'], help="Compile as library. Use 'static' for static library (.a) or 'dynamic' for shared library (.so)")
     parser.add_argument("--build", nargs="?", const="build.c5b", help="Build project using a build file (.c5b)")
+    parser.add_argument("-a", "--analyze", action="store_true", help="Analyze source files for errors and warnings without compiling")
     
     args = parser.parse_args()
 
@@ -213,6 +214,25 @@ def main():
 
     # Use first file as base for output naming if not specified
     base_name = os.path.splitext(input_files[0])[0]
+    
+    # Analyze mode - check for errors and warnings without compiling
+    if args.analyze:
+        print(f"Analyzing {', '.join([os.path.basename(f) for f in input_files])}...")
+        try:
+            if len(input_files) == 1:
+                has_errors, error_count, warning_count = analyze_file(input_files[0], include_paths=args.include, is_library=is_lib)
+            else:
+                has_errors, error_count, warning_count = analyze_files(input_files, include_paths=args.include, is_library=is_lib)
+            
+            if has_errors:
+                print(f"\n\033[91mAnalysis failed with {error_count} error(s) and {warning_count} warning(s)\033[0m")
+                sys.exit(1)
+            else:
+                print(f"\n\033[92mAnalysis passed with {warning_count} warning(s)\033[0m")
+                sys.exit(0)
+        except Exception as e:
+            print(f"Analysis error: {e}")
+            sys.exit(1)
     
     # Assembly phase
     print(f"Compiling {', '.join([os.path.basename(f) for f in input_files])} to GAS assembly...")

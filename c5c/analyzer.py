@@ -118,7 +118,7 @@ class SemanticAnalyzer:
         warning_msg = f"{location_str}: \033[93mwarning\033[0m: {m}\n{source_context}\n  \033[94mTip:\033[0m {t}"
         self.warnings.append(warning_msg)
 
-    def analyze(self, ast, require_main=True, show_warnings=True):
+    def analyze(self, ast, require_main=True, show_warnings=True, exit_on_error=True):
         self.show_warnings = show_warnings
         self._scan_declarations(ast)
         
@@ -149,7 +149,8 @@ class SemanticAnalyzer:
         if self.errors:
             print(f"\n\033[91mC5 COMPILER: {len(self.errors)} ERROR(S) FOUND\033[0m")
             for e in sorted(list(set(self.errors))): print(e)
-            sys.exit(1)
+            if exit_on_error:
+                sys.exit(1)
             
         if self.warnings and self.show_warnings:
             print(f"\n\033[93mC5 COMPILER: {len(self.warnings)} QUALITY WARNING(S)\033[0m")
