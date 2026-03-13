@@ -389,7 +389,22 @@ class CodeGen:
             raise Exception(f"Unknown arrow field {node[2]} on type {ty}")
         elif node[0] == 'array_access':
             # arr[idx]: compute address of element
-            base_addr, base_ty = self.get_lvalue(node[1])
+            # Check if base is an lvalue or needs to be evaluated as expression
+            if self.is_lvalue(node[1]):
+                base_addr, base_ty = self.get_lvalue(node[1])
+            else:
+                # Base is an expression (e.g., function call) - evaluate it
+                base_ty = self.gen_expr(node[1])
+                # For dynamic arrays returned from functions, the data pointer is in rax
+                if base_ty and base_ty.startswith('array<'):
+                    # Array returned via rax=ptr, rdx=len, rcx=cap
+                    base_addr = "(%rax)"
+                elif base_ty and base_ty.endswith('*'):
+                    # Pointer returned in rax
+                    base_addr = "(%rax)"
+                else:
+                    # Generic case - assume pointer in rax
+                    base_addr = "(%rax)"
             elem_ty = self.array_elem_type(base_ty)
             
             # Handle [] on char* or string types
@@ -826,14 +841,21 @@ __c5_str_replace:
         float_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5"]
         int_idx = 0
         float_idx = 0
+        stack_offset = 16  # Start offset for stack-passed parameters (above return address and saved rbp)
         
         # For struct returns, the caller passes a hidden pointer as first arg
         if self._returns_by_stack(ty):
             self.local_var_offset -= 8
             self.local_vars['__ret_ptr'] = (self.local_var_offset, ty + '*')
-            reg = int_regs[int_idx]
-            int_idx += 1
-            self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+            if int_idx < len(int_regs):
+                reg = int_regs[int_idx]
+                int_idx += 1
+                self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+            else:
+                # Load from stack
+                self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                stack_offset += 8
         
         for p in params:
             pty, pname = p
@@ -841,12 +863,24 @@ __c5_str_replace:
                 # Array param: 3 int regs (ptr, len, cap) -> 24 bytes
                 self.local_var_offset -= 24
                 self.local_vars[pname] = (self.local_var_offset, pty)
-                reg_ptr = int_regs[int_idx]; int_idx += 1
-                reg_len = int_regs[int_idx]; int_idx += 1
-                reg_cap = int_regs[int_idx]; int_idx += 1
-                self.text.append(f"    mov {reg_ptr}, {self.local_var_offset}(%rbp)")      # data ptr
-                self.text.append(f"    mov {reg_len}, {self.local_var_offset+8}(%rbp)")     # length
-                self.text.append(f"    mov {reg_cap}, {self.local_var_offset+16}(%rbp)")    # capacity
+                
+                # Check if we have enough registers
+                if int_idx + 2 < len(int_regs):
+                    reg_ptr = int_regs[int_idx]; int_idx += 1
+                    reg_len = int_regs[int_idx]; int_idx += 1
+                    reg_cap = int_regs[int_idx]; int_idx += 1
+                    self.text.append(f"    mov {reg_ptr}, {self.local_var_offset}(%rbp)")      # data ptr
+                    self.text.append(f"    mov {reg_len}, {self.local_var_offset+8}(%rbp)")     # length
+                    self.text.append(f"    mov {reg_cap}, {self.local_var_offset+16}(%rbp)")    # capacity
+                else:
+                    # Load from stack
+                    self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                    self.text.append(f"    mov {stack_offset+8}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset+8}(%rbp)")
+                    self.text.append(f"    mov {stack_offset+16}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset+16}(%rbp)")
+                    stack_offset += 24
             elif pty in self.structs:
                 # Struct parameter: pass in registers if <= 16 bytes, otherwise by pointer
                 st = self.structs[pty]
@@ -860,19 +894,38 @@ __c5_str_replace:
                 if st_sz <= 16:
                     # Pass in up to 2 registers
                     # Copy first 8 bytes from first register
-                    reg1 = int_regs[int_idx]
-                    int_idx += 1
-                    self.text.append(f"    mov {reg1}, {self.local_var_offset}(%rbp)")
+                    if int_idx < len(int_regs):
+                        reg1 = int_regs[int_idx]
+                        int_idx += 1
+                        self.text.append(f"    mov {reg1}, {self.local_var_offset}(%rbp)")
+                    else:
+                        # Load from stack
+                        self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                        self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                        stack_offset += 8
+                    
                     if st_sz > 8:
                         # Copy second 8 bytes from second register
-                        reg2 = int_regs[int_idx]
-                        int_idx += 1
-                        self.text.append(f"    mov {reg2}, {self.local_var_offset+8}(%rbp)")
+                        if int_idx < len(int_regs):
+                            reg2 = int_regs[int_idx]
+                            int_idx += 1
+                            self.text.append(f"    mov {reg2}, {self.local_var_offset+8}(%rbp)")
+                        else:
+                            # Load from stack
+                            self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                            self.text.append(f"    mov %rax, {self.local_var_offset+8}(%rbp)")
+                            stack_offset += 8
                 else:
                     # Passed by pointer - copy from pointer to local storage
-                    reg_ptr = int_regs[int_idx]
-                    int_idx += 1
-                    self.text.append(f"    mov {reg_ptr}, %r11")  # Save pointer
+                    if int_idx < len(int_regs):
+                        reg_ptr = int_regs[int_idx]
+                        int_idx += 1
+                        self.text.append(f"    mov {reg_ptr}, %r11")  # Save pointer
+                    else:
+                        # Load from stack
+                        self.text.append(f"    mov {stack_offset}(%rbp), %r11")
+                        stack_offset += 8
+                    
                     # Copy struct data from pointer to local storage
                     for copy_off in range(0, st_sz, 8):
                         remaining = st_sz - copy_off
@@ -891,18 +944,34 @@ __c5_str_replace:
             elif pty.startswith('float'):
                 self.local_var_offset -= 8
                 self.local_vars[pname] = (self.local_var_offset, pty)
-                reg = float_regs[float_idx]
-                float_idx += 1
-                if pty == 'float<32>':
-                    self.text.append(f"    movss {reg}, {self.local_var_offset}(%rbp)")
+                if float_idx < len(float_regs):
+                    reg = float_regs[float_idx]
+                    float_idx += 1
+                    if pty == 'float<32>':
+                        self.text.append(f"    movss {reg}, {self.local_var_offset}(%rbp)")
+                    else:
+                        self.text.append(f"    movsd {reg}, {self.local_var_offset}(%rbp)")
                 else:
-                    self.text.append(f"    movsd {reg}, {self.local_var_offset}(%rbp)")
+                    # Load from stack
+                    if pty == 'float<32>':
+                        self.text.append(f"    movss {stack_offset}(%rbp), %xmm0")
+                        self.text.append(f"    movss %xmm0, {self.local_var_offset}(%rbp)")
+                    else:
+                        self.text.append(f"    movsd {stack_offset}(%rbp), %xmm0")
+                        self.text.append(f"    movsd %xmm0, {self.local_var_offset}(%rbp)")
+                    stack_offset += 8
             else:
                 self.local_var_offset -= 8
                 self.local_vars[pname] = (self.local_var_offset, pty)
-                reg = int_regs[int_idx]
-                int_idx += 1
-                self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+                if int_idx < len(int_regs):
+                    reg = int_regs[int_idx]
+                    int_idx += 1
+                    self.text.append(f"    mov {reg}, {self.local_var_offset}(%rbp)")
+                else:
+                    # Load from stack
+                    self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                    stack_offset += 8
             
         # Call global initializer at the very start of main
         if name == 'main' and self.global_array_inits:
@@ -1014,8 +1083,6 @@ __c5_str_replace:
                                     self.text.append(f"    movb $0, {self.local_var_offset+i}(%rbp)")
                 else:
                     ret_ty = self.gen_expr(init_expr)
-                    if ret_ty:
-                        self.text.append(f"    # DEBUG: ret_ty={ret_ty}")
                     if ret_ty == 'fnptr':
                         # Lambda expression - always store as 8-byte pointer
                         self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
@@ -1223,7 +1290,7 @@ __c5_str_replace:
 
         elif node[0] == 'foreach_stmt':
             # foreach (index_var, value_var in array_expr) { body }
-            index_var, value_var, array_expr, body = node[1], node[2], node[3], node[4]
+            _, index_var, value_var, array_expr, body = node
             
             self.label_count += 1
             cond_label = f".Lforeach_cond_{self.label_count}"
@@ -1335,12 +1402,20 @@ __c5_str_replace:
                 self.text.append(f"    movzwq (%r11), %rax")
                 self.text.append(f"    mov %ax, {value_off}(%rbp)")
             elif elem_sz == 4:
-                self.text.append(f"    movl (%r11), %eax")
-                self.text.append(f"    mov %eax, {value_off}(%rbp)")
+                if self._is_float(elem_ty):
+                    self.text.append(f"    movss (%r11), %xmm0")
+                    self.text.append(f"    movss %xmm0, {value_off}(%rbp)")
+                else:
+                    self.text.append(f"    movl (%r11), %eax")
+                    self.text.append(f"    mov %eax, {value_off}(%rbp)")
             else:
                 # elem_sz == 8
-                self.text.append(f"    movq (%r11), %rax")
-                self.text.append(f"    mov %rax, {value_off}(%rbp)")
+                if self._is_float(elem_ty):
+                    self.text.append(f"    movsd (%r11), %xmm0")
+                    self.text.append(f"    movsd %xmm0, {value_off}(%rbp)")
+                else:
+                    self.text.append(f"    movq (%r11), %rax")
+                    self.text.append(f"    mov %rax, {value_off}(%rbp)")
             
             # Execute body
             self.break_targets.append(end_label)
@@ -1625,8 +1700,14 @@ __c5_str_replace:
                 self.text.append("    sub $8, %rsp")
                 if target_ty == 'float<32>': self.text.append("    movss %xmm0, (%rsp)")
                 else: self.text.append("    movsd %xmm0, (%rsp)")
+            elif target_ty and target_ty.startswith('array<'):
+                # Array returned in registers: rax=ptr, rdx=len, rcx=cap
+                # Push them in correct order for array struct on stack
+                self.text.append("    push %rcx")  # cap
+                self.text.append("    push %rdx")  # len
+                self.text.append("    push %rax")  # ptr
             elif self._is_aggregate(target_ty):
-                # Copy existing aggregate to stack
+                # Copy existing aggregate to stack (for structs returned by pointer)
                 sz = self.sizeof(target_ty)
                 self.text.append(f"    sub ${sz}, %rsp")
                 self.text.append("    mov %rax, %rsi") # src (addr returned by gen_expr for aggregates)
@@ -3417,54 +3498,82 @@ __c5_str_replace:
             int_idx = int_slots - 1 + reg_offset
             float_idx = float_slots - 1
             
+            # Track how many args are passed on stack (beyond register capacity)
+            stack_int_args = max(0, int_slots - 6 + reg_offset)
+            stack_float_args = max(0, float_slots - 8)
+            
             for ty in reversed(arg_types):
                 if ty.startswith('float'):
-                    reg = float_regs[float_idx]
-                    float_idx -= 1
-                    if is_vararg and ty == 'float<32>':
-                        self.text.append(f"    movss (%rsp), %xmm0")
-                        self.text.append(f"    cvtss2sd %xmm0, {reg}")
-                    else:
-                        if ty == 'float<32>':
-                            self.text.append(f"    movss (%rsp), {reg}")
+                    if float_idx >= 0 and float_idx < len(float_regs):
+                        reg = float_regs[float_idx]
+                        float_idx -= 1
+                        if is_vararg and ty == 'float<32>':
+                            self.text.append(f"    movss (%rsp), %xmm0")
+                            self.text.append(f"    cvtss2sd %xmm0, {reg}")
                         else:
-                            self.text.append(f"    movsd (%rsp), {reg}")
-                    self.text.append("    add $8, %rsp")
+                            if ty == 'float<32>':
+                                self.text.append(f"    movss (%rsp), {reg}")
+                            else:
+                                self.text.append(f"    movsd (%rsp), {reg}")
+                        self.text.append("    add $8, %rsp")
+                    else:
+                        # Float arg passed on stack - leave it there
+                        stack_float_args -= 1
                 elif ty.startswith('array<'):
                     # Pop 3 values: ptr, len, cap
-                    reg_ptr = int_regs[int_idx - 2]
-                    reg_len = int_regs[int_idx - 1]
-                    reg_cap = int_regs[int_idx]
-                    int_idx -= 3
-                    self.text.append(f"    pop {reg_ptr}")   # ptr
-                    self.text.append(f"    pop {reg_len}")   # len
-                    self.text.append(f"    pop {reg_cap}")   # cap
+                    if int_idx >= 2 and int_idx < len(int_regs):
+                        reg_ptr = int_regs[int_idx - 2]
+                        reg_len = int_regs[int_idx - 1]
+                        reg_cap = int_regs[int_idx]
+                        int_idx -= 3
+                        self.text.append(f"    pop {reg_ptr}")   # ptr
+                        self.text.append(f"    pop {reg_len}")   # len
+                        self.text.append(f"    pop {reg_cap}")   # cap
+                    else:
+                        # Array args passed on stack - leave them there
+                        stack_int_args -= 3
                 elif ty in self.structs:
                     # Struct argument: pop into registers
                     st_sz = self.structs[ty]['size']
                     if st_sz <= 16:
                         if st_sz > 8:
                             # Pop 2 values
-                            reg2 = int_regs[int_idx]
-                            int_idx -= 1
-                            reg1 = int_regs[int_idx]
-                            int_idx -= 1
-                            self.text.append(f"    pop {reg2}")   # second 8 bytes
-                            self.text.append(f"    pop {reg1}")   # first 8 bytes
+                            if int_idx >= 1 and int_idx < len(int_regs):
+                                reg2 = int_regs[int_idx]
+                                int_idx -= 1
+                                reg1 = int_regs[int_idx]
+                                int_idx -= 1
+                                self.text.append(f"    pop {reg2}")   # second 8 bytes
+                                self.text.append(f"    pop {reg1}")   # first 8 bytes
+                            else:
+                                # Struct args passed on stack - leave them there
+                                stack_int_args -= 2
                         else:
                             # Pop 1 value
+                            if int_idx >= 0 and int_idx < len(int_regs):
+                                reg = int_regs[int_idx]
+                                int_idx -= 1
+                                self.text.append(f"    pop {reg}")
+                            else:
+                                # Struct arg passed on stack - leave it there
+                                stack_int_args -= 1
+                    else:
+                        # Pop pointer
+                        if int_idx >= 0 and int_idx < len(int_regs):
                             reg = int_regs[int_idx]
                             int_idx -= 1
                             self.text.append(f"    pop {reg}")
-                    else:
-                        # Pop pointer
+                        else:
+                            # Pointer arg passed on stack - leave it there
+                            stack_int_args -= 1
+                else:
+                    if int_idx >= 0 and int_idx < len(int_regs):
                         reg = int_regs[int_idx]
                         int_idx -= 1
                         self.text.append(f"    pop {reg}")
-                else:
-                    reg = int_regs[int_idx]
-                    int_idx -= 1
-                    self.text.append(f"    pop {reg}")
+                    else:
+                        # Regular arg passed on stack - leave it there
+                        stack_int_args -= 1
 
             # For struct returns, allocate space and load hidden pointer into %rdi
             if self._returns_by_stack(ret_ty):

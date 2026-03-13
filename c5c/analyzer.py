@@ -1088,7 +1088,7 @@ class SemanticAnalyzer:
 
         elif tag == 'foreach_stmt':
             # foreach (index_var, value_var in array_expr) { body }
-            index_var, value_var, array_expr, body = node[1], node[2], node[3], node[4]
+            _, index_var, value_var, array_expr, body, loc = node
             
             # Analyze the array expression
             self._analyze_node(array_expr)
