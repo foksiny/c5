@@ -50,6 +50,8 @@ void* memmove(void* dest, void* src, int n);
 int<32> memcmp(void* s1, void* s2, int n);
 
 // time.h
+let const int RAND_MAX = 2147483647;
+
 type time_t {
     int,
     int<128>,
