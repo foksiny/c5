@@ -127,3 +127,34 @@ array<string> split(string txt, char sep) {
 
     return out;
 }
+
+array<string> split_s(string txt, string seps) {
+    array<string> out;
+    string word = "";
+    unsigned int<1> is_sep = 0;
+
+    for (int i = 0; i < txt.length(); i++) {
+        for (int j = 0; j < seps.length(); j++) {
+            if (txt[i] == seps[j]) {
+                if (word.length() != 0) {
+                    out.push(word);
+                    word = "";
+                }
+                is_sep = 1;
+                break;
+            } else {
+                is_sep = 0;
+            }
+        }
+        if (is_sep == 0) {
+            word = word + (string)txt[i];
+        }
+    }
+
+    if (word.length() > 0) {
+        out.push(word);
+        word = "";
+    }
+
+    return out;
+}
