@@ -105,3 +105,25 @@ const unsigned int<1> endswith(string str, string txt) {
     return 1;
 }
 
+array<string> split(string txt, char sep) {
+    array<string> out;
+    string word = "";
+
+    for (int i = 0; i < txt.length(); i++) {
+        if (txt[i] == sep) {
+            if (word.length() != 0) {
+                out.push(word);
+                word = "";
+            }
+        } else {
+            word = word + (string)txt[i];
+        }
+    }
+
+    if (word.length() != 0) {
+        out.push(word);
+        word = "";
+    }
+
+    return out;
+}
