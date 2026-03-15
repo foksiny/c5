@@ -156,6 +156,18 @@ class CodeGen:
         return 8
 
     # Helper methods for type properties
+    def _normalize_type(self, ty):
+        """Normalize a type by stripping const, signed/unsigned modifiers for comparison."""
+        if not ty:
+            return ty
+        # Strip const modifier
+        if ty.startswith('const '):
+            ty = ty[6:]
+        # Strip signed/unsigned modifiers
+        if ty.startswith('unsigned ') or ty.startswith('signed '):
+            ty = ty.split(' ', 1)[1]
+        return ty
+
     def _is_integer_type(self, ty):
         """Check if a type is an integer type (int, char, or sized int)."""
         if not ty: return False
@@ -2770,7 +2782,8 @@ __c5_str_replace:
             # Member to union cast: a member type can be stored directly in the union
             if dst_ty in self.types:
                 for mem_ty in self.types[dst_ty]:
-                    if mem_ty == src_ty:
+                    # Normalize both types for comparison (strip const, signed/unsigned modifiers)
+                    if self._normalize_type(mem_ty) == self._normalize_type(src_ty):
                         # Value is already in the right register/location
                         # For floats, move from xmm0 to rax (union stores as int-sized)
                         if src_ty.startswith('float'):
