@@ -1,0 +1,50 @@
+include <std.c5h>
+
+struct Person {
+    string name;
+    int age;
+};
+
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+
+void print(any msg) { // any is a type only usable in function arguments, and can't have its value changed, being a constant by default.
+    if (gettype(msg) == c5core::types::INT) {
+        std::printf("%d\n", (int)msg);
+    } else if (gettype(msg) == c5core::types::FLOAT) {
+        std::printf("%f\n", (float)msg);
+    } else if (gettype(msg) == c5core::types::STRING) {
+        std::printf("%s\n", (string)msg);
+    } else if (gettype(msg) == c5core::types::STRUCT) {
+        Person p = (Person)msg;
+        forstruct (field, name in p) {
+            print(field);
+        }
+    } else if (gettype(msg) == c5core::types::ARRAY) {
+        foreach (idx, item in msg) {
+            print(item);
+        }
+    } else if (gettype(msg) == c5core::types::ENUM) {
+        std::printf("%d\n", (int)msg);
+    } else if (gettype(msg) == c5core::types::MATRIX) {
+        foreach (idx, item in msg) {
+            print(item);
+        }
+    } else {
+        std::printf("Unknown type\n");
+    }
+}
+
+void main() {
+    Person p = {"John", 30};
+    print(10);
+    print(10.5);
+    print("hello");
+    print(p);
+    print((array<int<32>>) {1, 2, 3});
+    print((array<array<int<32>>>) {{1, 2, 3}, {4, 5, 6}});
+    print(Color::RED);
+}

@@ -30,17 +30,88 @@ class CodeGen:
         self.func_has_return = False # Track if function has return
         self.current_func_ret_ty = "" # Current function return type (initialize to empty string)
         self.global_array_inits = []  # List of (mangled_name, ty, init_node) for global arrays
+        
+        # Built-in c5core::types enum for gettype
+        self.enums['c5core::types'] = {
+            'INT': 0,
+            'STRING': 1,
+            'FLOAT': 2,
+            'STRUCT': 3,
+            'UNION': 4,
+            'TYPE': 5,
+            'ENUM': 6,
+            'VOID': 7,
+            'ARRAY': 8,
+            'MATRIX': 9,
+            'CHAR': 10
+        }
+        
+        # Built-in c5core::ptrtypes enum for pointer types
+        self.enums['c5core::ptrtypes'] = {
+            'INT': 0,
+            'STRING': 1,
+            'FLOAT': 2,
+            'STRUCT': 3,
+            'UNION': 4,
+            'TYPE': 5,
+            'ENUM': 6,
+            'VOID': 7,
+            'ARRAY': 8,
+            'MATRIX': 9,
+            'CHAR': 10
+        }
 
     def mangle(self, name):
         if '::' in name:
             return name.split('::')[-1]
         return name
 
+    def _get_type_enum_value(self, ty):
+        """Map a type string to its c5code::types enum value."""
+        # Strip const modifier
+        if ty.startswith('const '):
+            ty = ty[6:]
+        # Strip signed/unsigned modifiers
+        if ty.startswith('unsigned ') or ty.startswith('signed '):
+            ty = ty.split(' ', 1)[1]
+        
+        # Check if it's a pointer type
+        is_pointer = ty.endswith('*')
+        if is_pointer:
+            ty = ty[:-1]  # Remove the *
+        
+        # Map base types to enum values
+        # c5code::types enum values:
+        # INT=0, STRING=1, FLOAT=2, STRUCT=3, UNION=4, TYPE=5, ENUM=6, VOID=7, ARRAY=8, MATRIX=9, CHAR=10
+        
+        if ty in ('int', 'char'):
+            return 0 if not is_pointer else 0  # INT
+        elif ty == 'string':
+            return 1 if not is_pointer else 1  # STRING
+        elif ty.startswith('float'):
+            return 2 if not is_pointer else 2  # FLOAT
+        elif ty == 'void':
+            return 7 if not is_pointer else 7  # VOID
+        elif ty in self.structs:
+            return 3 if not is_pointer else 3  # STRUCT
+        elif ty in self.enums:
+            return 6 if not is_pointer else 6  # ENUM
+        elif ty in self.types:
+            return 4 if not is_pointer else 4  # UNION
+        elif ty.startswith('array<'):
+            return 8 if not is_pointer else 8  # ARRAY
+        elif ty.startswith('matrix<'):
+            return 9 if not is_pointer else 9  # MATRIX
+        else:
+            # Default to INT for unknown types
+            return 0
 
     def sizeof(self, ty):
         if ty.endswith('*'): return 8
         if ty == 'fnptr': return 8  # Function pointer type
         if ty.startswith('array<'): return 24  # ptr + len + cap
+        if ty == 'any':
+            return 16
         # Strip const modifier if present
         if ty.startswith('const '):
             ty = ty[6:]
@@ -209,6 +280,10 @@ class CodeGen:
             return 'void*'
         if tag == 'sizeof_type' or tag == 'sizeof_expr':
             return 'int'
+        if tag == 'cast':
+            # ('cast', target_type, operand, loc)
+            target_type = node[1]
+            return target_type
         if tag == 'id':
             name = node[1]
             if name in self.local_vars:
@@ -488,6 +563,39 @@ class CodeGen:
         elif node[0] == 'unary' and node[1] == '*':
             ty = self.gen_expr(node[2])
             return "(%rax)", ty[:-1] if ty.endswith('*') else 'void'
+        elif node[0] == 'cast':
+            target_type = node[1]
+            # Generate code for the cast expression; this yields a value or pointer
+            result_ty = self.gen_expr(node)
+            # If the result is a pointer to the target type, we can use it directly as lvalue
+            if result_ty == target_type + '*':
+                # The pointer is in %rax
+                return "(%rax)", target_type
+            else:
+                # Materialize the value into a temporary stack slot within the current frame
+                sz = self.sizeof(target_type)
+                if sz is None:
+                    raise Exception(f"Unknown size for type {target_type}")
+                # Allocate space in the local frame by adjusting offset
+                self.local_var_offset -= sz
+                offset = self.local_var_offset
+                # Store the value from the appropriate register/stack to the slot
+                if self._is_float(target_type):
+                    if target_type == 'float<32>':
+                        self.text.append(f"    movss %xmm0, {offset}(%rbp)")
+                    else:
+                        self.text.append(f"    movsd %xmm0, {offset}(%rbp)")
+                else:
+                    # Integer, pointer, or struct value in %rax
+                    if sz == 1:
+                        self.text.append(f"    movb %al, {offset}(%rbp)")
+                    elif sz == 2:
+                        self.text.append(f"    movw %ax, {offset}(%rbp)")
+                    elif sz == 4:
+                        self.text.append(f"    movl %eax, {offset}(%rbp)")
+                    else:
+                        self.text.append(f"    mov %rax, {offset}(%rbp)")
+                return f"{offset}(%rbp)", target_type
         raise Exception(f"Not an lvalue: {node[0]}")
 
     def generate(self, ast):
@@ -533,6 +641,32 @@ class CodeGen:
                 if init is None:
                     # Zero initialization for global variables without initializer
                     self.data.append(f"    .zero {sz}")
+                elif ty == 'any':
+                    # Box constant into any: store tag and data
+                    if init[0] == 'number':
+                        tag_val = 0  # INT
+                        data_val = init[1]
+                        self.data.append(f"    .quad {tag_val}")  # tag
+                        self.data.append(f"    .quad {data_val}")   # data
+                    elif init[0] == 'float':
+                        tag_val = 2  # FLOAT
+                        self.data.append(f"    .quad {tag_val}")  # tag
+                        # Emit double in .rodata and reference it? Or we can emit .double directly in .data
+                        # For simplicity, emit .double in .data section
+                        self.data.append(f"    .double {init[1]}")  # data
+                    elif init[0] == 'string':
+                        tag_val = 1  # STRING
+                        label = self.get_string_label(init[1])
+                        self.data.append(f"    .quad {tag_val}")  # tag
+                        self.data.append(f"    .quad {label}")    # data (pointer)
+                    elif init[0] == 'null':
+                        tag_val = 7  # VOID (treat null as void*)
+                        self.data.append(f"    .quad {tag_val}")  # tag
+                        self.data.append(f"    .quad 0")         # data (null pointer)
+                    else:
+                        # Complex initializer: zero and defer
+                        self.data.append(f"    .zero {sz}")
+                        self.global_array_inits.append((mangled, ty, init))
                 elif init[0] == 'number':
                     if sz == 1: self.data.append(f"    .byte {init[1]}")
                     elif sz == 2: self.data.append(f"    .short {init[1]}")
@@ -960,6 +1094,24 @@ __c5_str_replace:
                         self.text.append(f"    movsd {stack_offset}(%rbp), %xmm0")
                         self.text.append(f"    movsd %xmm0, {self.local_var_offset}(%rbp)")
                     stack_offset += 8
+            elif pty == 'any':
+                # any parameter: occupies 16 bytes (tag + data)
+                self.local_var_offset -= 16
+                self.local_vars[pname] = (self.local_var_offset, pty)
+                if int_idx + 1 < len(int_regs):
+                    # Two registers available: first register for tag, second for data
+                    reg_tag = int_regs[int_idx]
+                    reg_data = int_regs[int_idx + 1]
+                    int_idx += 2
+                    self.text.append(f"    mov {reg_tag}, {self.local_var_offset}(%rbp)")   # tag
+                    self.text.append(f"    mov {reg_data}, {self.local_var_offset+8}(%rbp)") # data
+                else:
+                    # Load both from stack: tag at stack_offset, data at stack_offset+8
+                    self.text.append(f"    mov {stack_offset}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
+                    self.text.append(f"    mov {stack_offset+8}(%rbp), %rax")
+                    self.text.append(f"    mov %rax, {self.local_var_offset+8}(%rbp)")
+                    stack_offset += 16
             else:
                 self.local_var_offset -= 8
                 self.local_vars[pname] = (self.local_var_offset, pty)
@@ -1039,7 +1191,79 @@ __c5_str_replace:
                 if init_expr[0] == 'lambda':
                     self.lambda_ret_type = ty
                 
-                if init_expr[0] == 'init_list':
+                # Special handling for 'any' type
+                if ty == 'any':
+                    init_ty = self._get_expr_type(init_expr)
+                    if init_ty == 'any':
+                        # Copy 16 bytes from source any
+                        self.gen_expr(init_expr)  # returns 'any', tag in %rax, data in %rdx
+                        base_off = self.local_var_offset
+                        self.text.append(f"    mov %rax, {base_off}(%rbp)")
+                        self.text.append(f"    mov %rdx, {base_off+8}(%rbp)")
+                    else:
+                        # Box the value into any
+                        tag_val = self._get_type_enum_value(init_ty)
+                        val_ty = self.gen_expr(init_expr)
+                        base_off = self.local_var_offset
+                        # For ALL types, allocate memory and store pointer
+                        # This ensures any always stores (tag, pointer) pairs
+                        sz = self.sizeof(init_ty)
+                        if sz == 0:
+                            sz = 1  # Minimum 1 byte for void
+                        # Save value (in %rax or %xmm0)
+                        if val_ty.startswith('float'):
+                            # Float value in %xmm0, save to stack temporarily
+                            self.text.append("    sub $8, %rsp")
+                            if val_ty == 'float<32>':
+                                self.text.append("    movss %xmm0, (%rsp)")
+                            else:
+                                self.text.append("    movsd %xmm0, (%rsp)")
+                            self.text.append("    mov (%rsp), %rax")  # Get bits into %rax
+                            self.text.append("    add $8, %rsp")
+                        # Now %rax has the value (or pointer for aggregates)
+                        # Allocate memory
+                        self.text.append("    push %rax")  # Save value
+                        self.text.append(f"    mov ${sz}, %rdi")
+                        self.text.append("    call malloc@PLT")
+                        # %rax = heap ptr
+                        self.text.append("    mov %rax, %r11")  # dest pointer
+                        # Store value to heap
+                        self.text.append("    pop %rsi")  # Restore value
+                        if val_ty.startswith('float'):
+                            # Float value, store via stack
+                            self.text.append("    push %rsi")
+                            if val_ty == 'float<32>':
+                                self.text.append("    movss (%rsp), %xmm0")
+                                self.text.append(f"    movss %xmm0, (%r11)")
+                            else:
+                                self.text.append("    movsd (%rsp), %xmm0")
+                                self.text.append(f"    movsd %xmm0, (%r11)")
+                            self.text.append("    add $8, %rsp")
+                        elif self._is_aggregate(init_ty):
+                            # Aggregate, memcpy from source pointer
+                            self.text.append("    mov %r11, %rdi")  # dest
+                            # src is in %rsi (was %rax before push)
+                            self.text.append(f"    mov ${sz}, %rdx")
+                            self.text.append("    sub $8, %rsp")
+                            self.text.append("    call memcpy@PLT")
+                            self.text.append("    add $8, %rsp")
+                        else:
+                            # Integer-like or pointer, store directly
+                            if sz == 1:
+                                self.text.append(f"    mov %sil, (%r11)")
+                            elif sz == 2:
+                                self.text.append(f"    mov %si, (%r11)")
+                            elif sz == 4:
+                                self.text.append(f"    mov %esi, (%r11)")
+                            else:
+                                self.text.append(f"    mov %rsi, (%r11)")
+                        # Store heap pointer in data slot (base_off+8)
+                        self.text.append(f"    mov %r11, {base_off+8}(%rbp)")
+                        # Store tag to tag slot (base_off)
+                        self.text.append(f"    mov ${tag_val}, %rax")
+                        self.text.append(f"    mov %rax, {base_off}(%rbp)")
+                    # Done with any initialization
+                elif init_expr[0] == 'init_list':
                     # Recursive initialization
                     self._gen_init_list_recursive(init_expr, ty)
                     # Result is on stack (aggregate or primitive), copy to local variable
@@ -1303,6 +1527,8 @@ __c5_str_replace:
                 elem_ty = array_ty[6:-1]
             elif array_ty == 'string' or array_ty == 'char*':
                 elem_ty = 'char'
+            elif array_ty == 'any':
+                elem_ty = 'any'
             elem_sz = self.sizeof(elem_ty)
             
             # Check if element type is a struct
@@ -1313,7 +1539,23 @@ __c5_str_replace:
             is_string_type = array_ty == 'string' or array_ty == 'char*'
             
             if not is_string_type:
-                if array_expr[0] == 'id' and array_expr[1] in self.local_vars:
+                if array_ty == 'any' and array_expr[0] == 'id' and array_expr[1] in self.local_vars:
+                    # For 'any' type, the variable stores (tag, data_ptr) where data_ptr
+                    # points to a heap-allocated array header (ptr, len, cap).
+                    # We need to dereference the data_ptr to get the actual array header.
+                    any_off = self.local_vars[array_expr[1]][0]
+                    self.local_var_offset -= 24
+                    array_off = self.local_var_offset
+                    # Load data pointer from the any variable (at any_off+8)
+                    self.text.append(f"    mov {any_off+8}(%rbp), %rax")  # data_ptr -> heap array header
+                    # Dereference the heap array header to get (ptr, len, cap)
+                    self.text.append("    mov (%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off}(%rbp)")       # data ptr
+                    self.text.append("    mov 8(%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off+8}(%rbp)")     # length
+                    self.text.append("    mov 16(%rax), %r11")
+                    self.text.append(f"    mov %r11, {array_off+16}(%rbp)")    # capacity
+                elif array_expr[0] == 'id' and array_expr[1] in self.local_vars:
                     # Use the existing local array variable directly
                     array_off = self.local_vars[array_expr[1]][0]
                 elif array_expr[0] == 'id' and array_expr[1] in self.global_vars:
@@ -1330,6 +1572,10 @@ __c5_str_replace:
                     
                     # Evaluate array expression and store it
                     self.gen_expr(array_expr)
+                    if array_ty == 'any':
+                        # any: tag in rax, ptr in rdx
+                        self.text.append("    mov %rdx, %rax")
+                    
                     # Expression returned pointer to header in %rax
                     self.text.append("    mov (%rax), %r11")
                     self.text.append(f"    mov %r11, {array_off}(%rbp)")       # data ptr
@@ -1389,7 +1635,13 @@ __c5_str_replace:
             self.text.append("    add %rax, %r11")
             
             # Load element at r11 into value variable
-            if is_struct or elem_sz > 8:
+            if elem_ty == 'any':
+                # For any type, load tag and pointer separately
+                self.text.append(f"    mov (%r11), %rax")  # tag
+                self.text.append(f"    mov %rax, {value_off}(%rbp)")
+                self.text.append(f"    mov 8(%r11), %rax")  # pointer
+                self.text.append(f"    mov %rax, {value_off+8}(%rbp)")
+            elif is_struct or elem_sz > 8:
                 # Use memcpy for struct types or large elements
                 self.text.append(f"    lea {value_off}(%rbp), %rdi")  # dest
                 self.text.append("    mov %r11, %rsi")  # src
@@ -1426,6 +1678,124 @@ __c5_str_replace:
             # Increment index
             self.text.append(f"    incq {index_off}(%rbp)")
             self.text.append(f"    jmp {cond_label}")
+            self.text.append(f"{end_label}:")
+        elif node[0] == 'forstruct_stmt':
+            # forstruct (field_var, name_var in struct_expr) { body }
+            _, field_var, name_var, struct_expr, body = node
+            
+            # Get struct type
+            struct_ty = self._get_expr_type(struct_expr)
+            
+            # Verify it's a struct type
+            if struct_ty not in self.structs:
+                raise Exception(f"forstruct requires a struct type, got {struct_ty}")
+            
+            # Get struct fields
+            struct_info = self.structs[struct_ty]
+            fields = struct_info['fields']
+            
+            # Evaluate struct expression to get its address
+            # Check if it's a simple variable reference
+            if struct_expr[0] == 'id' and struct_expr[1] in self.local_vars:
+                # Local struct variable
+                struct_off = self.local_vars[struct_expr[1]][0]
+                struct_addr = f"{struct_off}(%rbp)"
+            elif struct_expr[0] == 'id' and struct_expr[1] in self.global_vars:
+                # Global struct variable
+                struct_name = struct_expr[1]
+                struct_addr = f"{struct_name}(%rip)"
+            else:
+                # Complex expression - evaluate and store in temp
+                self.gen_expr(struct_expr)
+                # Result is in %rax (pointer to struct)
+                self.local_var_offset -= 8
+                struct_off = self.local_var_offset
+                self.text.append(f"    mov %rax, {struct_off}(%rbp)")
+                struct_addr = f"{struct_off}(%rbp)"
+            
+            # Allocate field variable (will be updated per iteration)
+            # Use a generic size since field types vary
+            self.local_var_offset -= 8
+            field_off = self.local_var_offset
+            # Store as void* initially, will be updated per iteration
+            self.local_vars[field_var] = (field_off, 'void*')
+            
+            # Allocate name variable (string)
+            self.local_var_offset -= 8
+            name_off = self.local_var_offset
+            self.local_vars[name_var] = (name_off, 'string')
+            
+            # Generate loop for each field
+            self.label_count += 1
+            end_label = f".Lforstruct_end_{self.label_count}"
+            
+            # Iterate over each field
+            for i, (field_name, field_info) in enumerate(fields.items()):
+                field_ty = field_info['type']
+                field_offset = field_info['offset']
+                field_sz = self.sizeof(field_ty)
+                
+                # Update field variable type to actual field type for this iteration
+                # This allows gettype() to return the correct type
+                self.local_vars[field_var] = (field_off, field_ty)
+                
+                # Load field value from struct
+                if struct_addr.endswith('(%rbp)'):
+                    base_off = int(struct_addr.split('(')[0])
+                    field_addr = f"{base_off + field_offset}(%rbp)"
+                elif struct_addr.endswith('(%rip)'):
+                    field_addr = f"{field_offset}{struct_addr}"
+                else:
+                    # Pointer in memory
+                    self.text.append(f"    mov {struct_addr}, %r11")
+                    field_addr = f"{field_offset}(%r11)"
+                
+                # Load field value into field variable
+                if field_sz == 1:
+                    self.text.append(f"    movzbq {field_addr}, %rax")
+                    self.text.append(f"    mov %al, {field_off}(%rbp)")
+                elif field_sz == 2:
+                    self.text.append(f"    movzwq {field_addr}, %rax")
+                    self.text.append(f"    mov %ax, {field_off}(%rbp)")
+                elif field_sz == 4:
+                    if self._is_float(field_ty):
+                        self.text.append(f"    movss {field_addr}, %xmm0")
+                        self.text.append(f"    movss %xmm0, {field_off}(%rbp)")
+                    else:
+                        self.text.append(f"    movl {field_addr}, %eax")
+                        self.text.append(f"    mov %eax, {field_off}(%rbp)")
+                elif field_sz == 8:
+                    if self._is_float(field_ty):
+                        self.text.append(f"    movsd {field_addr}, %xmm0")
+                        self.text.append(f"    movsd %xmm0, {field_off}(%rbp)")
+                    else:
+                        self.text.append(f"    movq {field_addr}, %rax")
+                        self.text.append(f"    mov %rax, {field_off}(%rbp)")
+                else:
+                    # Large type - use memcpy
+                    self.text.append(f"    lea {field_off}(%rbp), %rdi")  # dest
+                    if struct_addr.endswith('(%rbp)'):
+                        base_off = int(struct_addr.split('(')[0])
+                        self.text.append(f"    lea {base_off + field_offset}(%rbp), %rsi")  # src
+                    elif struct_addr.endswith('(%rip)'):
+                        self.text.append(f"    lea {field_offset}{struct_addr}, %rsi")
+                    else:
+                        self.text.append(f"    mov {struct_addr}, %r11")
+                        self.text.append(f"    lea {field_offset}(%r11), %rsi")
+                    self.text.append(f"    mov ${field_sz}, %rdx")  # size
+                    self.text.append("    call memcpy@PLT")
+                
+                # Set field name as string literal
+                name_label = self.get_string_label(field_name)
+                self.text.append(f"    lea {name_label}(%rip), %rax")
+                self.text.append(f"    mov %rax, {name_off}(%rbp)")
+                
+                # Execute body
+                self.break_targets.append(end_label)
+                for stmt in body:
+                    self.gen_stmt(stmt)
+                self.break_targets.pop()
+            
             self.text.append(f"{end_label}:")
         elif node[0] == 'break_stmt':
             if not self.break_targets:
@@ -1862,6 +2232,18 @@ __c5_str_replace:
             self.text.append(f"    mov ${sz}, %rax")
             return 'int'
         
+        elif node[0] == 'gettype':
+            expr = node[1]
+            ty = self._get_expr_type(expr)
+            if ty == 'any':
+                # Evaluate expression to get runtime tag in %rax
+                self.gen_expr(expr)
+                # tag is now in %rax
+            else:
+                type_val = self._get_type_enum_value(ty)
+                self.text.append(f"    mov ${type_val}, %rax")
+            return 'int'
+        
         elif node[0] == 'lambda':
             # Lambda expression: generate a unique function and return its address
             params, body = node[1], node[2]
@@ -1955,6 +2337,261 @@ __c5_str_replace:
             dst_ty = target_type
             if src_ty == dst_ty:
                 return src_ty
+            # Special case: casting init_list to array type
+            if operand[0] == 'init_list' and dst_ty.startswith('array<'):
+                # Generate the init_list with the target array type
+                self._gen_init_list_recursive(operand, dst_ty)
+                # The init_list leaves the array struct (ptr, len, cap) on the stack
+                # Pop into registers: rax=ptr, rdx=len, rcx=cap
+                self.text.append("    pop %rax")  # ptr
+                self.text.append("    pop %rdx")  # len
+                self.text.append("    pop %rcx")  # cap
+                return dst_ty
+            # Special handling for 'any' type conversions
+            if src_ty == 'any' and dst_ty != 'any':
+                # Extract value from any
+                # At this point, tag in %rax, data in %rdx
+                dst_sz = self.sizeof(dst_ty)
+                if dst_sz <= 8:
+                    # Move data to appropriate register
+                    if dst_ty.startswith('float'):
+                        # Move from %rdx to %xmm0
+                        self.text.append("    movq %rdx, %xmm0")
+                        if dst_ty == 'float<32>':
+                            self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                        return dst_ty
+                    else:
+                        # Move from %rdx to %rax, with possible truncation
+                        self.text.append("    mov %rdx, %rax")
+                        if dst_sz == 4:
+                            self.text.append("    mov %eax, %eax")
+                        elif dst_sz == 2:
+                            self.text.append("    mov %ax, %ax")
+                        elif dst_sz == 1:
+                            self.text.append("    mov %al, %al")
+                        return dst_ty
+                else:
+                    # dst_ty > 8: data in %rdx is a pointer to the value
+                    self.text.append("    mov %rdx, %rax")
+                    return dst_ty + '*'
+            if dst_ty == 'any' and src_ty != 'any':
+                # Box the source value into any representation
+                tag_val = self._get_type_enum_value(src_ty)
+                # Ensure operand code already generated; src_ty value is in appropriate location
+                # We need to set %rax = tag, %rdx = data
+                # First, move data to %rdx
+                if src_ty.startswith('float'):
+                    # Value in %xmm0, move to %rdx via stack
+                    self.text.append("    sub $8, %rsp")
+                    if src_ty == 'float<32>':
+                        self.text.append("    movss %xmm0, (%rsp)")
+                    else:
+                        self.text.append("    movsd %xmm0, (%rsp)")
+                    self.text.append("    mov (%rsp), %rdx")
+                    self.text.append("    add $8, %rsp")
+                elif src_ty.startswith('array<'):
+                    # Array type: %rax=ptr, %rdx=len, %rcx=cap (register convention)
+                    # Convert each element into an 'any' value (tag + data = 16 bytes)
+                    # so that foreach on the resulting any iterates correctly.
+                    elem_ty = self.array_elem_type(src_ty)
+                    elem_sz = self.sizeof(elem_ty) if elem_ty else 8
+                    elem_tag = self._get_type_enum_value(elem_ty) if elem_ty else 0
+                    
+                    self.label_count += 1
+                    loop_label = f".Lany_box_loop_{self.label_count}"
+                    done_label = f".Lany_box_done_{self.label_count}"
+                    
+                    # Save source array info on stack
+                    self.text.append("    push %rcx")  # save cap
+                    self.text.append("    push %rdx")  # save len
+                    self.text.append("    push %rax")  # save src data ptr
+                    
+                    # Allocate new array: len * 16 bytes (each any element = 16 bytes)
+                    self.text.append("    mov 8(%rsp), %rax")  # reload len
+                    self.text.append("    shl $4, %rax")       # len * 16
+                    self.text.append("    mov %rax, %rdi")
+                    self.text.append("    call malloc@PLT")
+                    self.text.append("    mov %rax, %r11")     # r11 = dest array of any
+                    
+                    # Loop: convert each element from source to any in dest
+                    # r11 = dest ptr (any array)
+                    # Use r12 = src ptr, r13 = counter, r14 = len
+                    self.text.append("    push %r12")
+                    self.text.append("    push %r13")
+                    self.text.append("    push %r14")
+                    self.text.append("    push %r11")  # save dest base
+                    # Recalculate stack positions: src_ptr at 32(%rsp), len at 40(%rsp), cap at 48(%rsp)
+                    self.text.append("    mov 32(%rsp), %r12")  # src data ptr
+                    self.text.append("    mov 40(%rsp), %r14")  # len
+                    self.text.append("    xor %r13, %r13")      # counter = 0
+                    
+                    self.text.append(f"{loop_label}:")
+                    self.text.append("    cmp %r14, %r13")
+                    self.text.append(f"    jge {done_label}")
+                    
+                    # Load source element at r12 + r13 * elem_sz
+                    self.text.append("    mov %r13, %rax")
+                    self.text.append(f"    imul ${elem_sz}, %rax")
+                    self.text.append("    add %r12, %rax")
+                    # Read element value and store as any
+                    if elem_ty and elem_ty.startswith('array<'):
+                        # Element is itself an array (24-byte header: ptr, len, cap)
+                        # We must recursively convert inner array elements to any format
+                        inner_elem_ty = self.array_elem_type(elem_ty)
+                        inner_elem_sz = self.sizeof(inner_elem_ty) if inner_elem_ty else 8
+                        inner_elem_tag = self._get_type_enum_value(inner_elem_ty) if inner_elem_ty else 0
+                        
+                        self.label_count += 1
+                        inner_loop = f".Lany_inner_loop_{self.label_count}"
+                        inner_done = f".Lany_inner_done_{self.label_count}"
+                        
+                        # %rax = address of source inner array header (ptr, len, cap)
+                        # Read inner array info before clobbering registers
+                        self.text.append("    mov 8(%rax), %rcx")     # inner len
+                        self.text.append("    mov (%rax), %rax")      # inner src data ptr
+                        
+                        # Save outer loop state
+                        self.text.append("    push %r12")
+                        self.text.append("    push %r13")
+                        self.text.append("    push %r14")
+                        self.text.append("    mov %rax, %r12")  # r12 = inner src data ptr
+                        self.text.append("    mov %rcx, %r14")  # r14 = inner len
+                        
+                        # Allocate new data array: inner_len * 16 bytes (any elements)
+                        self.text.append("    mov %r14, %rax")
+                        self.text.append("    shl $4, %rax")          # len * 16
+                        self.text.append("    mov %rax, %rdi")
+                        self.text.append("    call malloc@PLT")
+                        self.text.append("    push %rax")             # save inner dest data ptr
+                        self.text.append("    xor %r13, %r13")        # inner counter = 0
+                        
+                        self.text.append(f"{inner_loop}:")
+                        self.text.append("    cmp %r14, %r13")
+                        self.text.append(f"    jge {inner_done}")
+                        
+                        # Load inner element at r12 + r13 * inner_elem_sz
+                        self.text.append("    mov %r13, %rax")
+                        self.text.append(f"    imul ${inner_elem_sz}, %rax")
+                        self.text.append("    add %r12, %rax")
+                        if inner_elem_sz == 1:
+                            self.text.append("    movzbq (%rax), %rax")
+                        elif inner_elem_sz == 2:
+                            self.text.append("    movzwq (%rax), %rax")
+                        elif inner_elem_sz == 4:
+                            self.text.append("    movl (%rax), %eax")
+                        else:
+                            self.text.append("    mov (%rax), %rax")
+                        
+                        # Store as any at inner_dest + r13 * 16
+                        self.text.append("    mov %r13, %rcx")
+                        self.text.append("    shl $4, %rcx")
+                        self.text.append("    mov (%rsp), %r11")      # inner dest data
+                        self.text.append("    add %rcx, %r11")
+                        self.text.append(f"    movq ${inner_elem_tag}, (%r11)")
+                        self.text.append("    mov %rax, 8(%r11)")
+                        
+                        self.text.append("    inc %r13")
+                        self.text.append(f"    jmp {inner_loop}")
+                        self.text.append(f"{inner_done}:")
+                        
+                        # Build inner array header on heap
+                        self.text.append("    pop %rcx")   # inner dest data ptr
+                        self.text.append("    push %rcx")   # keep it for header
+                        self.text.append("    push %r14")   # save inner len
+                        self.text.append("    mov $24, %rdi")
+                        self.text.append("    call malloc@PLT")
+                        self.text.append("    mov %rax, %r11")
+                        self.text.append("    pop %rcx")    # inner len
+                        self.text.append("    pop %rax")    # inner dest data ptr
+                        self.text.append("    mov %rax, (%r11)")       # header.ptr
+                        self.text.append("    mov %rcx, 8(%r11)")      # header.len
+                        self.text.append("    mov %rcx, 16(%r11)")     # header.cap
+                        self.text.append("    mov %r11, %rax")  # data = header pointer
+                        
+                        # Restore outer loop state
+                        self.text.append("    pop %r14")
+                        self.text.append("    pop %r13")
+                        self.text.append("    pop %r12")
+                    elif elem_sz == 1:
+                        self.text.append("    movzbq (%rax), %rax")
+                    elif elem_sz == 2:
+                        self.text.append("    movzwq (%rax), %rax")
+                    elif elem_sz == 4:
+                        self.text.append("    movl (%rax), %eax")
+                    elif elem_sz <= 8:
+                        self.text.append("    mov (%rax), %rax")
+                    else:
+                        # Large element (struct etc.): allocate heap copy
+                        self.text.append("    push %rax")  # save src addr
+                        self.text.append(f"    mov ${elem_sz}, %rdi")
+                        self.text.append("    call malloc@PLT")
+                        self.text.append("    mov %rax, %rcx")  # rcx = heap copy
+                        self.text.append("    pop %rsi")  # src addr
+                        self.text.append("    mov %rcx, %rdi")
+                        self.text.append(f"    push %rcx")
+                        self.text.append(f"    mov ${elem_sz}, %rdx")
+                        self.text.append("    call memcpy@PLT")
+                        self.text.append("    pop %rax")  # data = heap pointer
+                    
+                    # Store as any at dest + r13 * 16: [tag(8), data(8)]
+                    self.text.append("    mov %r13, %rcx")
+                    self.text.append("    shl $4, %rcx")         # counter * 16
+                    self.text.append("    mov (%rsp), %r11")     # reload dest base
+                    self.text.append("    add %rcx, %r11")
+                    self.text.append(f"    movq ${elem_tag}, (%r11)")   # tag
+                    self.text.append("    mov %rax, 8(%r11)")           # data
+                    
+                    self.text.append("    inc %r13")
+                    self.text.append(f"    jmp {loop_label}")
+                    self.text.append(f"{done_label}:")
+                    
+                    # Now build array header on heap: (dest_ptr, len, cap)
+                    self.text.append("    pop %r11")   # dest array base
+                    self.text.append("    pop %r14")   # restore r14
+                    self.text.append("    pop %r13")   # restore r13
+                    self.text.append("    pop %r12")   # restore r12
+                    
+                    # Pop original source info
+                    self.text.append("    pop %rax")   # discard src ptr
+                    self.text.append("    pop %rcx")   # len (we need this)
+                    self.text.append("    pop %rax")   # discard cap
+                    
+                    # Allocate 24 bytes for the array header
+                    self.text.append("    push %r11")  # save dest data ptr
+                    self.text.append("    push %rcx")  # save len
+                    self.text.append("    mov $24, %rdi")
+                    self.text.append("    call malloc@PLT")
+                    self.text.append("    mov %rax, %r11")     # r11 = header ptr
+                    self.text.append("    pop %rcx")           # len
+                    self.text.append("    pop %rax")           # dest data ptr
+                    self.text.append("    mov %rax, (%r11)")   # header.ptr = dest data
+                    self.text.append("    mov %rcx, 8(%r11)")  # header.len = len
+                    self.text.append("    mov %rcx, 16(%r11)") # header.cap = len
+                    # Put header pointer in %rdx
+                    self.text.append("    mov %r11, %rdx")
+                elif self._is_aggregate(src_ty) and self.sizeof(src_ty) > 8:
+                    # For large aggregates, we need to allocate heap and copy
+                    # The source value is assumed to be in %rax as a pointer (from lvalue or function return)
+                    sz = self.sizeof(src_ty)
+                    self.text.append("    push %rax")  # save src pointer
+                    self.text.append(f"    mov ${sz}, %rdi")
+                    self.text.append("    call malloc@PLT")
+                    self.text.append("    mov %rax, %r11")  # dest pointer
+                    # memcpy from source to heap
+                    self.text.append("    mov %r11, %rdi")
+                    self.text.append("    pop %rsi")        # src pointer
+                    self.text.append(f"    mov ${sz}, %rdx")
+                    self.text.append("    sub $8, %rsp")
+                    self.text.append("    call memcpy@PLT")
+                    self.text.append("    add $8, %rsp")
+                    # Put dest pointer in %rdx
+                    self.text.append("    mov %r11, %rdx")
+                else:
+                    # Integer-like or pointer, value in %rax
+                    self.text.append("    mov %rax, %rdx")
+                # Now set tag in %rax
+                self.text.append(f"    mov ${tag_val}, %rax")
+                return 'any'
             # Union to member cast: reinterpret union value as member type
             if src_ty in self.types:
                 for mem_ty in self.types[src_ty]:
@@ -2126,6 +2763,25 @@ __c5_str_replace:
                 return dst_ty
             if src_clean == 'string' and dst_clean == 'char*':
                 return dst_ty
+            # void* to string (for forstruct field casting)
+            if src_clean == 'void*' and dst_clean == 'string':
+                # void* is already a pointer, just return it as string
+                return dst_ty
+            # Member to union cast: a member type can be stored directly in the union
+            if dst_ty in self.types:
+                for mem_ty in self.types[dst_ty]:
+                    if mem_ty == src_ty:
+                        # Value is already in the right register/location
+                        # For floats, move from xmm0 to rax (union stores as int-sized)
+                        if src_ty.startswith('float'):
+                            self.text.append("    sub $8, %rsp")
+                            if src_ty == 'float<32>':
+                                self.text.append("    movss %xmm0, (%rsp)")
+                            else:
+                                self.text.append("    movsd %xmm0, (%rsp)")
+                            self.text.append("    mov (%rsp), %rax")
+                            self.text.append("    add $8, %rsp")
+                        return dst_ty
             # If none of the above, unsupported
             raise Exception(f"Unsupported cast from {src_ty} to {dst_ty}")
         elif node[0] == 'unary':
@@ -2369,6 +3025,39 @@ __c5_str_replace:
             if ty.startswith('const '):
                 ty = ty[6:]
             sz = self.sizeof(ty)
+            # Special handling for 'any' type: load tag and data
+            if ty == 'any':
+                # Load tag into %rax and data into %rdx from the any variable at addr
+                # Handle different addressing modes
+                if addr.endswith('(%rbp)'):
+                    off_str = addr[:-6] if len(addr) > 6 else ''
+                    off = int(off_str) if off_str else 0
+                    self.text.append(f"    mov {off}(%rbp), %rax")
+                    self.text.append(f"    mov {off+8}(%rbp), %rdx")
+                elif addr.endswith('(%r11)'):
+                    off_str = addr[:-6] if len(addr) > 6 else ''
+                    off = int(off_str) if off_str else 0
+                    self.text.append(f"    mov {off}(%r11), %rax")
+                    self.text.append(f"    mov {off+8}(%r11), %rdx")
+                elif addr.endswith('(%rax)'):
+                    off_str = addr[:-6] if len(addr) > 6 else ''
+                    off = int(off_str) if off_str else 0
+                    self.text.append(f"    mov {off}(%rax), %rax")
+                    self.text.append(f"    mov {off+8}(%rax), %rdx")
+                elif addr.endswith('(%rip)'):
+                    # Global any: use rip-relative addressing
+                    base = addr[:-5]  # remove '(%rip)'
+                    self.text.append(f"    mov {addr}, %rax")
+                    self.text.append(f"    mov {base}+8(%rip), %rdx")
+                else:
+                    # For other addressing modes (like offset(%rbp), (%rax), etc.)
+                    # Load tag
+                    self.text.append(f"    mov {addr}, %rax")
+                    # Compute address of data: addr + 8
+                    self.text.append(f"    lea {addr}, %r10")
+                    self.text.append(f"    add $8, %r10")
+                    self.text.append(f"    mov (%r10), %rdx")
+                return 'any'
             # For fixed-size arrays, decay to pointer to element type
             if self._is_fixed_array_type(ty):
                 # Compute address of array (already in addr) and return pointer to element
@@ -2463,6 +3152,103 @@ __c5_str_replace:
                 self.text.append("    push %r10")
                 addr_on_stack = True
                 addr = "(%r10)" # Will be popped into r10
+
+            # Handle assignment to 'any' type
+            if ty_l == 'any':
+                # Evaluate right expression
+                right_ty = self._get_expr_type(right)
+                # Ensure address is ready
+                if addr_on_stack:
+                    self.text.append("    pop %r10")
+                    addr = "(%r10)"
+                    addr_on_stack = False
+                # Generate code for right expression
+                if right_ty == 'any':
+                    # Copy 16 bytes from source any
+                    val_ty = self.gen_expr(right)  # should be 'any'
+                    # Store tag
+                    self.text.append(f"    mov %rax, {addr}")
+                    # Store data
+                    if addr.endswith('(%rip)'):
+                        base = addr[:-5]
+                        self.text.append(f"    mov %rdx, {base}+8(%rip)")
+                    else:
+                        self.text.append(f"    lea {addr}, %r10")
+                        self.text.append(f"    add $8, %r10")
+                        self.text.append(f"    mov %rdx, (%r10)")
+                else:
+                    # Box the value into any
+                    tag_val = self._get_type_enum_value(right_ty)
+                    val_ty = self.gen_expr(right)
+                    # For ALL types, allocate memory and store pointer
+                    # This ensures any always stores (tag, pointer) pairs
+                    sz = self.sizeof(right_ty)
+                    if sz == 0:
+                        sz = 1  # Minimum 1 byte for void
+                    # Save value (in %rax or %xmm0)
+                    if val_ty.startswith('float'):
+                        # Float value in %xmm0, save to stack temporarily
+                        self.text.append("    sub $8, %rsp")
+                        if val_ty == 'float<32>':
+                            self.text.append("    movss %xmm0, (%rsp)")
+                        else:
+                            self.text.append("    movsd %xmm0, (%rsp)")
+                        self.text.append("    mov (%rsp), %rax")  # Get bits into %rax
+                        self.text.append("    add $8, %rsp")
+                    # Now %rax has the value (or pointer for aggregates)
+                    # Allocate memory
+                    self.text.append("    push %rax")  # Save value
+                    self.text.append(f"    mov ${sz}, %rdi")
+                    self.text.append("    call malloc@PLT")
+                    # %rax = heap ptr
+                    self.text.append("    mov %rax, %r11")  # dest pointer
+                    # Store value to heap
+                    self.text.append("    pop %rsi")  # Restore value
+                    if val_ty.startswith('float'):
+                        # Float value, store via stack
+                        self.text.append("    push %rsi")
+                        if val_ty == 'float<32>':
+                            self.text.append("    movss (%rsp), %xmm0")
+                            self.text.append(f"    movss %xmm0, (%r11)")
+                        else:
+                            self.text.append("    movsd (%rsp), %xmm0")
+                            self.text.append(f"    movsd %xmm0, (%r11)")
+                        self.text.append("    add $8, %rsp")
+                    elif self._is_aggregate(right_ty):
+                        # Aggregate, memcpy from source pointer
+                        self.text.append("    mov %r11, %rdi")  # dest
+                        # src is in %rsi (was %rax before push)
+                        self.text.append(f"    mov ${sz}, %rdx")
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call memcpy@PLT")
+                        self.text.append("    add $8, %rsp")
+                    else:
+                        # Integer-like or pointer, store directly
+                        if sz == 1:
+                            self.text.append(f"    mov %sil, (%r11)")
+                        elif sz == 2:
+                            self.text.append(f"    mov %si, (%r11)")
+                        elif sz == 4:
+                            self.text.append(f"    mov %esi, (%r11)")
+                        else:
+                            self.text.append(f"    mov %rsi, (%r11)")
+                    # Store heap pointer in data slot (addr+8)
+                    if addr.endswith('(%rip)'):
+                        base = addr[:-5]
+                        self.text.append(f"    mov %r11, {base}+8(%rip)")
+                    else:
+                        # Calculate addr+8 properly
+                        self.text.append(f"    lea {addr}, %r10")
+                        self.text.append(f"    add $8, %r10")
+                        self.text.append(f"    mov %r11, (%r10)")
+                    # Store tag
+                    self.text.append(f"    mov ${tag_val}, %rax")
+                    if addr.endswith('(%rip)'):
+                        base = addr[:-5]
+                        self.text.append(f"    mov %rax, {base}(%rip)")
+                    else:
+                        self.text.append(f"    mov %rax, {addr}")
+                return ty_l
 
             if right[0] == 'init_list':
                 self._gen_init_list_recursive(right, ty_l)
@@ -3319,6 +4105,14 @@ __c5_str_replace:
             # For array arguments, pass the 3 fields (ptr, len, cap)
             # For struct arguments, pass in registers if <= 16 bytes, otherwise by pointer
             arg_types = []
+            param_types = []
+            if not is_func_ptr_call:
+                # Find function definition to get parameter types
+                for fnode in self._current_ast:
+                    if fnode[0] == 'func' and fnode[2] == func_name:
+                        params = fnode[3]
+                        param_types = [p[0] for p in params]
+                        break
             
             for arg in args:
                 if arg[0] == 'init_list':
@@ -3427,7 +4221,16 @@ __c5_str_replace:
                             self.text.append("    push %rax")
                         arg_types.append('int')
                 else:
-                    ty = self.gen_expr(arg)
+                    # Determine expected parameter type if available
+                    idx = len(arg_types)
+                    param_ty = param_types[idx] if idx < len(param_types) else None
+                    # Get natural type of argument
+                    arg_ty = self._get_expr_type(arg)
+                    if param_ty is not None and arg_ty != param_ty:
+                        # Need conversion: wrap in cast
+                        ty = self.gen_expr(('cast', param_ty, arg))
+                    else:
+                        ty = self.gen_expr(arg)
                     if ty.startswith('float'):
                         self.text.append("    sub $8, %rsp")
                         if ty == 'float<32>':
@@ -3441,6 +4244,11 @@ __c5_str_replace:
                         self.text.append("    pushq 16(%rax)")  # cap (popped last)
                         self.text.append("    pushq 8(%rax)")   # len (popped 2nd)
                         self.text.append("    pushq (%rax)")    # ptr (popped 1st)
+                        arg_types.append(ty)
+                    elif ty == 'any':
+                        # any: tag in %rax, data in %rdx; push data first then tag so memory layout: tag (lower), data (higher)
+                        self.text.append("    push %rdx")  # data
+                        self.text.append("    push %rax")  # tag
                         arg_types.append(ty)
                     elif ty in self.structs:
                         # Struct argument: ty is the struct type (not pointer)
@@ -3482,6 +4290,8 @@ __c5_str_replace:
                     float_slots += 1
                 elif ty.startswith('array<'):
                     int_slots += 3  # ptr, len, cap
+                elif ty == 'any':
+                    int_slots += 2
                 elif ty in self.structs:
                     st_sz = self.structs[ty]['size']
                     if st_sz <= 16:
@@ -3532,6 +4342,18 @@ __c5_str_replace:
                     else:
                         # Array args passed on stack - leave them there
                         stack_int_args -= 3
+                elif ty == 'any':
+                    # any uses two int slots: tag and data
+                    if int_idx >= 1 and int_idx < len(int_regs):
+                        reg2 = int_regs[int_idx]  # second register (e.g., %rsi)
+                        int_idx -= 1
+                        reg1 = int_regs[int_idx]  # first register (e.g., %rdi)
+                        int_idx -= 1
+                        self.text.append(f"    pop {reg1}")   # tag (first)
+                        self.text.append(f"    pop {reg2}")   # data (second)
+                    else:
+                        # any passed on stack - leave both slots
+                        stack_int_args -= 2
                 elif ty in self.structs:
                     # Struct argument: pop into registers
                     st_sz = self.structs[ty]['size']

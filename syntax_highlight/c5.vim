@@ -8,15 +8,15 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword c5Keyword let const macro type fnct as syscall
+syn keyword c5Keyword let const macro type fnct as syscall forstruct gettype forstruct
 syn keyword c5Include include libinclude
 syn match c5PreProc "\v#[a-zA-Z_]+"
 syn keyword c5Conditional if else switch case default with
 syn keyword c5Repeat while do for foreach in break
 syn keyword c5Statement return try catch
 syn keyword c5Structure struct enum
-syn keyword c5Type void int float char string array signed unsigned
-syn keyword c5Constant NULL
+syn keyword c5Type void int float char string array signed unsigned any
+syn keyword c5Constant NULL c5core
 
 " Built-in Methods
 syn match c5Method "\v\.\zs(push|pop|length|insert|insertItems|clear|replace)"

@@ -5,6 +5,7 @@ import argparse
 import shutil
 import tempfile
 from .compiler import compile_file, compile_files, analyze_file, analyze_files
+from .debugger import debug_executable
 
 def parse_build_file(content):
     config = {
@@ -55,6 +56,7 @@ def main():
     parser.add_argument("--lib", choices=['dynamic', 'static'], help="Compile as library. Use 'static' for static library (.a) or 'dynamic' for shared library (.so)")
     parser.add_argument("--build", nargs="?", const="build.c5b", help="Build project using a build file (.c5b)")
     parser.add_argument("-a", "--analyze", action="store_true", help="Analyze source files for errors and warnings without compiling")
+    parser.add_argument("-d", "--debug", action="store_true", help="Compile and debug the executable, showing crash details if it fails")
     
     args = parser.parse_args()
 
@@ -253,6 +255,13 @@ def main():
             f.write(asm)
         print(f"Success! Assembly generated at: {out_s}")
         return
+    
+    # Debug mode: save assembly file for debugging
+    debug_asm_file = None
+    if args.debug:
+        debug_asm_file = base_name + ".debug.s"
+        with open(debug_asm_file, "w") as f:
+            f.write(asm)
 
     # Full compilation phase
     # Write assembly to temporary file
@@ -432,6 +441,30 @@ def main():
         if os.path.exists(s_file): os.remove(s_file)
         if os.path.exists(o_file): os.remove(o_file)
         print(f"Success! Executable ready at: {final_out}")
+        
+        # Debug mode: run the executable and analyze crashes
+        if args.debug:
+            print("\n" + "=" * 60)
+            print("\033[94m[DEBUG MODE]\033[0m")
+            print("=" * 60)
+            
+            # Get source files for debugging
+            source_files = input_files if 'input_files' in locals() else []
+            
+            # Run debugger
+            success = debug_executable(
+                final_out,
+                source_files=source_files,
+                assembly_file=debug_asm_file,
+                timeout=30
+            )
+            
+            # Keep debug assembly file for future debugging (don't clean up)
+            # if debug_asm_file and os.path.exists(debug_asm_file):
+            #     os.remove(debug_asm_file)
+            
+            if not success:
+                sys.exit(1)
 
 if __name__ == '__main__':
     main()

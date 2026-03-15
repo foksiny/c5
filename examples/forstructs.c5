@@ -1,0 +1,26 @@
+include <std.c5h>
+
+struct Person {
+    string name;
+    int age;
+};
+
+void main() {
+    Person p = {"John", 30};
+    forstruct (field, name in p) {
+        if (gettype(field) == c5core::types::STRING) {
+            std::printf("%s: %s\n", name, (string)field); // type casting isn't needed, but is used for safety
+        } else if (gettype(field) == c5core::types::INT) {
+            std::printf("%s: %d\n", name, (int)field);
+        }
+    }
+}
+
+// all types inside of types are:
+// INT, STRING, FLOAT, STRUCT, UNION, TYPE (like user-define type name {};
+// that supports only one value instead of multiple ones, which is a union),
+// ENUM, VOID, ARRAY, MATRIX
+
+// also, if the type is a pointer, it'll show "POINTER" in the c5code::types enum,
+// which means you'll need to use 'c5core::ptrtypes::...', which have all those
+// same types in the 'types' enum, but for pointers.

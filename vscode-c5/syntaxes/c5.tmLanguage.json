@@ -26,15 +26,15 @@
             ]
         },
         "keywords": {
-            "patterns": [
-                {
-                    "name": "keyword.control.c5",
-                    "match": "\\b(if|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch)\\b"
-                },
-                {
-                    "name": "keyword.other.c5",
-                    "match": "\\b(let|const|macro|type|fnct|as|syscall|sizeof)\\b"
-                },
+             "patterns": [
+                 {
+                     "name": "keyword.control.c5",
+                     "match": "\\b(if|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch|forstruct)\\b"
+                 },
+                 {
+                     "name": "keyword.other.c5",
+                     "match": "\\b(let|const|macro|type|fnct|as|syscall|sizeof|gettype)\\b"
+                 },
                 {
                     "name": "keyword.control.directive.c5",
                     "match": "\\b(include|libinclude|detect|once)\\b"
@@ -50,24 +50,24 @@
             ]
         },
         "types": {
-            "patterns": [
-                {
-                    "name": "storage.type.primitive.c5",
-                    "match": "\\b(void|int|float|char|string|array|signed|unsigned)\\b"
-                },
-                {
-                    "name": "storage.type.parameterized.c5",
-                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*<",
-                    "captures": {
-                        "0": { "name": "storage.type.c5" }
-                    }
-                },
-                {
-                    "name": "constant.language.c5",
-                    "match": "\\bNULL\\b"
-                }
-            ]
-        },
+             "patterns": [
+                 {
+                     "name": "storage.type.primitive.c5",
+                     "match": "\\b(void|int|float|char|string|array|signed|unsigned|any|c5core)\\b"
+                 },
+                 {
+                     "name": "storage.type.parameterized.c5",
+                     "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*<",
+                     "captures": {
+                         "0": { "name": "storage.type.c5" }
+                     }
+                 },
+                 {
+                     "name": "constant.language.c5",
+                     "match": "\\bNULL\\b"
+                 }
+             ]
+         },
         "strings": {
             "patterns": [
                 {

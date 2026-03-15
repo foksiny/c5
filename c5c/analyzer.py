@@ -27,6 +27,37 @@ class SemanticAnalyzer:
         self.current_try_stmt_node = None  # Current statement node being analyzed
         self.try_errors_map = {}  # Map from try_catch node location to list of errors
         self.ret_ty_stack = [] # Stack for tracking return types of nested functions/lambdas
+        self.refined_types = {}  # For 'any' variables: maps variable name to its current refined type
+        
+        # Built-in c5core::types enum for gettype
+        self.enums['c5core::types'] = {
+            'INT': 0,
+            'STRING': 1,
+            'FLOAT': 2,
+            'STRUCT': 3,
+            'UNION': 4,
+            'TYPE': 5,
+            'ENUM': 6,
+            'VOID': 7,
+            'ARRAY': 8,
+            'MATRIX': 9,
+            'CHAR': 10
+        }
+        
+        # Built-in c5core::ptrtypes enum for pointer types
+        self.enums['c5core::ptrtypes'] = {
+            'INT': 0,
+            'STRING': 1,
+            'FLOAT': 2,
+            'STRUCT': 3,
+            'UNION': 4,
+            'TYPE': 5,
+            'ENUM': 6,
+            'VOID': 7,
+            'ARRAY': 8,
+            'MATRIX': 9,
+            'CHAR': 10
+        }
 
         self.error_db = {
             "E001": ("Undefined symbol", "The identifier was not found in any visible scope."),
@@ -52,6 +83,7 @@ class SemanticAnalyzer:
             "E041": ("Invalid main arguments", "main must have 0 or 2 arguments."),
             "E042": ("Const Violation", "Cannot modify a const variable."),
             "E023": ("Integer Overflow", "Integer literal exceeds the range of the target type."),
+            "E043": ("Invalid 'any' type usage", "The 'any' type can only be used in function parameters."),
         }
 
         self.warning_db = {
@@ -74,6 +106,27 @@ class SemanticAnalyzer:
             if isinstance(loc, tuple) and len(loc) == 2:
                 return loc
         return (1, 0)
+    
+    def _type_contains_any(self, ty):
+        """Check if a type string contains 'any' type."""
+        if not ty:
+            return False
+        # Direct 'any' type
+        if ty == 'any':
+            return True
+        # Check for 'any' in pointer types
+        if ty.endswith('*'):
+            return self._type_contains_any(ty[:-1])
+        # Check for 'any' in template types like array<any>
+        if '<' in ty and ty.endswith('>'):
+            inner = ty[ty.find('<')+1 : ty.rfind('>')]
+            return self._type_contains_any(inner)
+        # Check for 'any' in modifiers
+        if ty.startswith('const '):
+            return self._type_contains_any(ty[6:])
+        if ty.startswith('signed ') or ty.startswith('unsigned '):
+            return self._type_contains_any(ty.split(' ', 1)[1])
+        return False
     
     def _format_source_line(self, line, col):
         """Format a source line with error pointer."""
@@ -167,6 +220,9 @@ class SemanticAnalyzer:
         if tag == 'syscall': return "int"
         if tag == 'id':
             name = node[1]
+            # If we have a refined type for this 'any' variable, use it
+            if name in self.refined_types:
+                return self.refined_types[name]
             for scope in reversed(self.scopes):
                 if name in scope:
                     ty = scope[name]
@@ -178,6 +234,9 @@ class SemanticAnalyzer:
             # ('cast', target_type, operand, loc)
             return node[1]  # The target type of the cast
         if tag == 'sizeof_type' or tag == 'sizeof_expr':
+            return 'int'
+        if tag == 'gettype':
+            # gettype returns an int (enum value)
             return 'int'
         if tag == 'binop':
             op = node[1]
@@ -440,6 +499,9 @@ class SemanticAnalyzer:
             return 8
         if base_ty == 'void':
             return 0
+        # 'any' type: dynamic type with type tag (8 bytes for type tag + 8 bytes for value)
+        if base_ty == 'any':
+            return 16
         # Integer with specific width
         if base_ty.startswith('int<') and base_ty.endswith('>'):
             try:
@@ -503,6 +565,9 @@ class SemanticAnalyzer:
         """Check if source_type can be assigned to target_type."""
         # Fast path: identical types are compatible
         if target_type == source_type:
+            return True
+        # Special case: 'any' type is compatible with any type (and vice versa)
+        if target_type == 'any' or source_type == 'any':
             return True
         # Special case: void* is compatible with any pointer type (and vice versa)
         if source_type == 'void*' and target_type.endswith('*'):
@@ -654,6 +719,9 @@ class SemanticAnalyzer:
         if tag == 'var_decl':
             ty, name, init = node[1], node[2], node[3]
             if name in self.scopes[-1]: self.add_error("E015", name, loc)
+            # Check if 'any' type is used in variable declaration (not allowed)
+            if self._type_contains_any(ty):
+                self.add_error("E043", f"Variable '{name}' cannot have type '{ty}'", loc)
             self.scopes[-1][name] = ty
             self.var_locs[name] = loc  # Store variable location
             if init:
@@ -666,69 +734,112 @@ class SemanticAnalyzer:
                 if init[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
                     delattr(self, 'lambda_ret_type')
 
-                # Special case: string literal initializing a char array (C-style)
-                if init[0] == 'string' and (ty == 'char' or self._is_fixed_array_type(ty) and self._get_fixed_array_element_type(ty) == 'char'):
-                    # OK - string literal can initialize char array
-                    pass
-                elif init[0] == 'init_list':
-                    # Struct or array initializer
-                    if ty in self.structs:
-                        fields = self.structs[ty]  # list of (field_type, field_name)
-                        elements = init[1]
-                        for i, elem in enumerate(elements):
-                            if i >= len(fields):
-                                self.add_error("E015", f"too many initializers for struct {ty}", loc)
-                                break
-                            field_type = fields[i][0]
-                            # Check element compatibility
-                            if elem[0] == 'number' and isinstance(elem[1], int):
-                                self._check_int_literal_against_type(field_type, elem[1], loc)
-                            elif elem[0] == 'float':
-                                self._check_float_literal_against_type(field_type, elem[1], loc)
-                            else:
-                                elem_type = self._get_type(elem)
-                                if not self._types_compatible(field_type, elem_type):
-                                    self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
-                    # Fixed-size array initializer
-                    elif self._is_fixed_array_type(ty):
-                        elem_ty = self._get_fixed_array_element_type(ty)
-                        elements = init[1]
-                        # Get the actual count from the type
-                        _, count = self._parse_fixed_array_type(ty)
-                        if len(elements) > count:
-                            self.add_error("E015", f"too many initializers for array {ty}", loc)
-                        for i, elem in enumerate(elements):
-                            if elem[0] == 'number' and isinstance(elem[1], int):
-                                self._check_int_literal_against_type(elem_ty, elem[1], loc)
-                            elif elem[0] == 'float':
-                                self._check_float_literal_against_type(elem_ty, elem[1], loc)
-                            else:
-                                elem_type = self._get_type(elem)
-                                if not self._types_compatible(elem_ty, elem_type):
-                                    self.add_error("E002", f"Cannot initialize array element of type {elem_ty} with {elem_type}", loc)
-                elif init[0] == 'lambda':
-                    # Lambda initializer: skip type check (the variable's type is the lambda's return type)
-                    # The lambda body will be analyzed separately.
-                    pass
-                elif init[0] == 'number' and isinstance(init[1], int):
-                    self._check_int_literal_against_type(ty, init[1], loc)
-                elif init[0] == 'float':
-                    self._check_float_literal_against_type(ty, init[1], loc)
-                elif init[0] == 'binop':
-                    const_val = self._eval_constant_int(init)
-                    if const_val is not None:
-                        self._check_int_literal_against_type(ty, const_val, loc)
+                # For 'any' type, accept any initializer; refine type now.
+                if ty == 'any':
+                    init_ty = self._get_type(init)
+                    self.refined_types[name] = init_ty
+                else:
+                    # Special case: string literal initializing a char array (C-style)
+                    if init[0] == 'string' and (ty == 'char' or self._is_fixed_array_type(ty) and self._get_fixed_array_element_type(ty) == 'char'):
+                        # OK - string literal can initialize char array
+                        pass
+                    elif init[0] == 'init_list':
+                        # Struct or array initializer
+                        if ty in self.structs:
+                            fields = self.structs[ty]  # list of (field_type, field_name)
+                            elements = init[1]
+                            for i, elem in enumerate(elements):
+                                if i >= len(fields):
+                                    self.add_error("E015", f"too many initializers for struct {ty}", loc)
+                                    break
+                                field_type = fields[i][0]
+                                # Check element compatibility
+                                if elem[0] == 'number' and isinstance(elem[1], int):
+                                    self._check_int_literal_against_type(field_type, elem[1], loc)
+                                elif elem[0] == 'float':
+                                    self._check_float_literal_against_type(field_type, elem[1], loc)
+                                else:
+                                    elem_type = self._get_type(elem)
+                                    if not self._types_compatible(field_type, elem_type):
+                                        self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
+                        # Fixed-size array initializer
+                        elif self._is_fixed_array_type(ty):
+                            elem_ty = self._get_fixed_array_element_type(ty)
+                            elements = init[1]
+                            # Get the actual count from the type
+                            _, count = self._parse_fixed_array_type(ty)
+                            if len(elements) > count:
+                                self.add_error("E015", f"too many initializers for array {ty}", loc)
+                            for i, elem in enumerate(elements):
+                                if elem[0] == 'number' and isinstance(elem[1], int):
+                                    self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                                elif elem[0] == 'float':
+                                    self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                                else:
+                                    elem_type = self._get_type(elem)
+                                    if not self._types_compatible(elem_ty, elem_type):
+                                        self.add_error("E002", f"Cannot initialize array element of type {elem_ty} with {elem_type}", loc)
+                        # Dynamic array initializer (array<T>)
+                        elif ty.startswith('array<') and ty.endswith('>'):
+                            elem_ty = ty[6:-1]
+                            elements = init[1]
+                            for elem in elements:
+                                if elem[0] == 'number' and isinstance(elem[1], int):
+                                    self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                                elif elem[0] == 'float':
+                                    self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                                elif elem[0] == 'init_list':
+                                    # Nested initializer list (e.g., for struct elements)
+                                    if elem_ty in self.structs:
+                                        fields = self.structs[elem_ty]
+                                        sub_elements = elem[1]
+                                        for j, sub_elem in enumerate(sub_elements):
+                                            if j >= len(fields):
+                                                self.add_error("E015", f"too many initializers for struct {elem_ty}", loc)
+                                                break
+                                            field_type = fields[j][0]
+                                            if sub_elem[0] == 'number' and isinstance(sub_elem[1], int):
+                                                self._check_int_literal_against_type(field_type, sub_elem[1], loc)
+                                            elif sub_elem[0] == 'float':
+                                                self._check_float_literal_against_type(field_type, sub_elem[1], loc)
+                                            else:
+                                                sub_elem_type = self._get_type(sub_elem)
+                                                if not self._types_compatible(field_type, sub_elem_type):
+                                                    self.add_error("E002", f"Cannot initialize field of type {field_type} with {sub_elem_type}", loc)
+                                    else:
+                                        self.add_error("E002", f"Cannot initialize array element of type {elem_ty} with init_list", loc)
+                                else:
+                                    elem_type = self._get_type(elem)
+                                    if not self._types_compatible(elem_ty, elem_type):
+                                        self.add_error("E002", f"Cannot initialize array element of type {elem_ty} with {elem_type}", loc)
+                        else:
+                            self.add_error("E002", f"Cannot assign initializer list to non-aggregate type {ty}", loc)
+                    elif init[0] == 'lambda':
+                        # Lambda initializer: skip type check (the variable's type is the lambda's return type)
+                        # The lambda body will be analyzed separately.
+                        pass
+                    elif init[0] == 'number' and isinstance(init[1], int):
+                        self._check_int_literal_against_type(ty, init[1], loc)
+                    elif init[0] == 'float':
+                        self._check_float_literal_against_type(ty, init[1], loc)
+                    elif init[0] == 'binop':
+                        const_val = self._eval_constant_int(init)
+                        if const_val is not None:
+                            self._check_int_literal_against_type(ty, const_val, loc)
+                        else:
+                            init_type = self._get_type(init)
+                            if not self._types_compatible(ty, init_type):
+                                self.add_error("E002", f"Cannot initialize {ty} with {init_type}", loc)
                     else:
                         init_type = self._get_type(init)
                         if not self._types_compatible(ty, init_type):
                             self.add_error("E002", f"Cannot initialize {ty} with {init_type}", loc)
-                else:
-                    init_type = self._get_type(init)
-                    if not self._types_compatible(ty, init_type):
-                        self.add_error("E002", f"Cannot initialize {ty} with {init_type}", loc)
         
         elif tag == 'pub_var':
             ty, name, init = node[1], node[2], node[3]
+            # Check if 'any' type is used in public variable declaration (not allowed)
+            if self._type_contains_any(ty):
+                self.add_error("E043", f"Public variable '{name}' cannot have type '{ty}'", loc)
             # Checked in scan_declarations
             if init: self._analyze_node(init)
         
@@ -746,64 +857,74 @@ class SemanticAnalyzer:
             if right[0] == 'lambda' and hasattr(self, 'lambda_ret_type'):
                 delattr(self, 'lambda_ret_type')
 
-            # Check for initializer list assignment
-            if right[0] == 'init_list':
-                if l_ty in self.structs:
-                    fields = self.structs[l_ty]
-                    elements = right[1]
-                    if len(elements) > len(fields):
-                        self.add_error("E015", f"too many initializers for struct {l_ty}", loc)
-                    for i, elem in enumerate(elements):
-                        if i >= len(fields): break
-                        field_type = fields[i][0]
-                        if elem[0] == 'number' and isinstance(elem[1], int):
-                            self._check_int_literal_against_type(field_type, elem[1], loc)
-                        elif elem[0] == 'float':
-                            self._check_float_literal_against_type(field_type, elem[1], loc)
-                        else:
-                            elem_type = self._get_type(elem)
-                            if not self._types_compatible(field_type, elem_type):
-                                self.add_error("E002", f"Cannot assign {elem_type} to field {fields[i][1]} of type {field_type}", loc)
-                elif self._is_fixed_array_type(l_ty):
-                    elem_ty = self._get_fixed_array_element_type(l_ty)
-                    elements = right[1]
-                    _, count = self._parse_fixed_array_type(l_ty)
-                    if len(elements) > count:
-                        self.add_error("E015", f"too many initializers for array {l_ty}", loc)
-                    for elem in elements:
-                        if elem[0] == 'number' and isinstance(elem[1], int):
-                            self._check_int_literal_against_type(elem_ty, elem[1], loc)
-                        elif elem[0] == 'float':
-                            self._check_float_literal_against_type(elem_ty, elem[1], loc)
-                        else:
-                            elem_type = self._get_type(elem)
-                            if not self._types_compatible(elem_ty, elem_type):
-                                self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
-                elif l_ty.startswith('array<') and l_ty.endswith('>'):
-                    elem_ty = l_ty[6:-1]
-                    elements = right[1]
-                    for elem in elements:
-                        if elem[0] == 'number' and isinstance(elem[1], int):
-                            self._check_int_literal_against_type(elem_ty, elem[1], loc)
-                        elif elem[0] == 'float':
-                            self._check_float_literal_against_type(elem_ty, elem[1], loc)
-                        else:
-                            elem_type = self._get_type(elem)
-                            if not self._types_compatible(elem_ty, elem_type):
-                                self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+            # Determine if left-hand side variable is originally of type 'any'
+            skip_checks = False
+            if left[0] == 'id':
+                var_name = left[1]
+                for scope in reversed(self.scopes):
+                    if var_name in scope:
+                        if scope[var_name] == 'any':
+                            skip_checks = True
+                        break
+            if not skip_checks:
+                # Check for initializer list assignment
+                if right[0] == 'init_list':
+                    if l_ty in self.structs:
+                        fields = self.structs[l_ty]
+                        elements = right[1]
+                        if len(elements) > len(fields):
+                            self.add_error("E015", f"too many initializers for struct {l_ty}", loc)
+                        for i, elem in enumerate(elements):
+                            if i >= len(fields): break
+                            field_type = fields[i][0]
+                            if elem[0] == 'number' and isinstance(elem[1], int):
+                                self._check_int_literal_against_type(field_type, elem[1], loc)
+                            elif elem[0] == 'float':
+                                self._check_float_literal_against_type(field_type, elem[1], loc)
+                            else:
+                                elem_type = self._get_type(elem)
+                                if not self._types_compatible(field_type, elem_type):
+                                    self.add_error("E002", f"Cannot assign {elem_type} to field {fields[i][1]} of type {field_type}", loc)
+                    elif self._is_fixed_array_type(l_ty):
+                        elem_ty = self._get_fixed_array_element_type(l_ty)
+                        elements = right[1]
+                        _, count = self._parse_fixed_array_type(l_ty)
+                        if len(elements) > count:
+                            self.add_error("E015", f"too many initializers for array {l_ty}", loc)
+                        for elem in elements:
+                            if elem[0] == 'number' and isinstance(elem[1], int):
+                                self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                            elif elem[0] == 'float':
+                                self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                            else:
+                                elem_type = self._get_type(elem)
+                                if not self._types_compatible(elem_ty, elem_type):
+                                    self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+                    elif l_ty.startswith('array<') and l_ty.endswith('>'):
+                        elem_ty = l_ty[6:-1]
+                        elements = right[1]
+                        for elem in elements:
+                            if elem[0] == 'number' and isinstance(elem[1], int):
+                                self._check_int_literal_against_type(elem_ty, elem[1], loc)
+                            elif elem[0] == 'float':
+                                self._check_float_literal_against_type(elem_ty, elem[1], loc)
+                            else:
+                                elem_type = self._get_type(elem)
+                                if not self._types_compatible(elem_ty, elem_type):
+                                    self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+                    else:
+                        self.add_error("E002", f"Cannot assign initializer list to non-aggregate type {l_ty}", loc)
                 else:
-                    self.add_error("E002", f"Cannot assign initializer list to non-aggregate type {l_ty}", loc)
-            else:
-                r_ty = self._get_type(right)
-                # Check integer literal range/type
-                if right[0] == 'number' and isinstance(right[1], int):
-                    self._check_int_literal_against_type(l_ty, right[1], loc)
-                elif right[0] == 'float':
-                    self._check_float_literal_against_type(l_ty, right[1], loc)
-                else:
-                    # For non-literals, require type compatibility
-                    if not self._types_compatible(l_ty, r_ty):
-                        self.add_error("E002", f"Cannot assign {r_ty} to {l_ty}", loc)
+                    r_ty = self._get_type(right)
+                    # Check integer literal range/type
+                    if right[0] == 'number' and isinstance(right[1], int):
+                        self._check_int_literal_against_type(l_ty, right[1], loc)
+                    elif right[0] == 'float':
+                        self._check_float_literal_against_type(l_ty, right[1], loc)
+                    else:
+                        # For non-literals, require type compatibility
+                        if not self._types_compatible(l_ty, r_ty):
+                            self.add_error("E002", f"Cannot assign {r_ty} to {l_ty}", loc)
 
             # Check if left-hand side is a const variable
             if left[0] == 'id':
@@ -814,6 +935,16 @@ class SemanticAnalyzer:
                         var_type = scope[name]
                         if var_type.startswith('const '):
                             self.add_error("E042", f"'{name}' is const and cannot be modified", loc)
+                        break
+            
+            # Update refined type for 'any' variables: refine to the assigned type
+            if left[0] == 'id':
+                var_name = left[1]
+                for scope in reversed(self.scopes):
+                    if var_name in scope:
+                        if scope[var_name] == 'any':  # originally declared as any
+                            r_ty = self._get_type(right)
+                            self.refined_types[var_name] = r_ty
                         break
 
         elif tag == 'compound_assign':
@@ -950,9 +1081,19 @@ class SemanticAnalyzer:
             # Type of sizeof is 'int'
             return ('sizeof_expr', expr, loc)
 
+        elif tag == 'gettype':
+            # ('gettype', expr, loc)
+            expr = node[1]
+            self._analyze_node(expr)
+            # Type of gettype is 'int' (enum value)
+            return ('gettype', expr, loc)
+
         elif tag == 'cast':
             # ('cast', target_type, operand, loc)
             target_type, operand = node[1], node[2]
+            # Check if 'any' type is used in cast target type (not allowed)
+            if self._type_contains_any(target_type):
+                self.add_error("E043", f"Cannot cast to 'any' type", loc)
             self._analyze_node(operand)
             # No type compatibility check; cast explicitly converts any type to any type
         
@@ -989,6 +1130,9 @@ class SemanticAnalyzer:
                 for a in args: self._analyze_node(a)
 
         elif tag == 'func':
+            # Check if 'any' type is used in function return type (not allowed)
+            if self._type_contains_any(node[1]):
+                self.add_error("E043", f"Function '{node[2]}' cannot have return type '{node[1]}'", loc)
             self.ret_ty_stack.append(node[1])
             self.scopes.append({})
             for pty, pname in node[3]: self.scopes[-1][pname] = pty
@@ -1062,6 +1206,10 @@ class SemanticAnalyzer:
             # with (expr as ty name) { body }
             expr, ty, name, body = node[1], node[2], node[3], node[4]
             
+            # Check if 'any' type is used in with statement variable type (not allowed)
+            if self._type_contains_any(ty):
+                self.add_error("E043", f"Variable '{name}' in with statement cannot have type '{ty}'", loc)
+            
             # Analyze expression
             self._analyze_node(expr)
             expr_ty = self._get_type(expr)
@@ -1100,6 +1248,10 @@ class SemanticAnalyzer:
                 elem_ty = array_ty[6:-1]
             elif array_ty == 'string' or array_ty == 'char*':
                 elem_ty = 'char'
+            elif array_ty == 'any':
+                # For 'any' type, we need to handle it specially
+                # The element type will be determined at runtime
+                elem_ty = 'any'
             
             # Add index and value variables to a new scope
             self.scopes.append({})
@@ -1116,6 +1268,50 @@ class SemanticAnalyzer:
             
             # Pop scope
             self.scopes.pop()
+
+        elif tag == 'forstruct_stmt':
+            # forstruct (field_var, name_var in struct_expr) { body }
+            _, field_var, name_var, struct_expr, body, loc = node
+            
+            # Analyze the struct expression
+            self._analyze_node(struct_expr)
+            
+            # Get the struct type
+            struct_ty = self._get_type(struct_expr)
+            
+            # Verify it's a struct type or 'any' type
+            if struct_ty not in self.structs and struct_ty != 'any':
+                self.add_error("E012", f"forstruct requires a struct type, got {struct_ty}", loc)
+                # Still analyze body with unknown types
+                self.scopes.append({})
+                self.scopes[-1][field_var] = 'unknown'
+                self.scopes[-1][name_var] = 'string'
+                self.var_locs[field_var] = loc
+                self.var_locs[name_var] = loc
+                self.break_context.append('loop')
+                for s in body:
+                    self._analyze_node(s)
+                self.break_context.pop()
+                self.scopes.pop()
+            else:
+                # Add field and name variables to a new scope
+                # field_var will be the type of each field (we use a union-like approach)
+                # For simplicity, we'll use 'void*' for field type since it can be cast to any type
+                # For 'any' type, we also use 'void*' since the actual type is determined at runtime
+                self.scopes.append({})
+                self.scopes[-1][field_var] = 'void*'
+                self.scopes[-1][name_var] = 'string'
+                self.var_locs[field_var] = loc
+                self.var_locs[name_var] = loc
+                
+                # Analyze body within break context
+                self.break_context.append('loop')
+                for s in body:
+                    self._analyze_node(s)
+                self.break_context.pop()
+                
+                # Pop scope
+                self.scopes.pop()
 
         elif tag == 'expr_stmt':
             self._analyze_node(node[1])
@@ -1280,6 +1476,9 @@ class SemanticAnalyzer:
             # Lambda expression: create a new scope for parameters and analyze body
             # Use contextual return type if available, default to 'int'
             lambda_ret_ty = getattr(self, 'lambda_ret_type', 'int')
+            # Check if 'any' type is used in lambda return type (not allowed)
+            if self._type_contains_any(lambda_ret_ty):
+                self.add_error("E043", f"Lambda cannot have return type '{lambda_ret_ty}'", loc)
             self.ret_ty_stack.append(lambda_ret_ty)
             params, body = node[1], node[2]
             self.scopes.append({})
@@ -1354,6 +1553,9 @@ class SemanticAnalyzer:
                 self.functions[node[2]] = (node[1], len(node[3]), False, False)
                 self.func_locs[node[2]] = loc  # Store function location
             elif node[0] == 'extern':
+                # Check if 'any' type is used in extern function return type (not allowed)
+                if self._type_contains_any(node[1]):
+                    self.add_error("E043", f"Extern function '{node[2]}' cannot have return type '{node[1]}'", loc)
                 if node[2] in self.functions:
                     # If already declared/defined, check compatibility
                     prev_info = self.functions[node[2]]
@@ -1365,12 +1567,20 @@ class SemanticAnalyzer:
                 self.functions[node[2]] = (node[1], len(node[3]), node[4], True)
                 self.func_locs[node[2]] = loc  # Store function location
             elif node[0] == 'struct_decl':
+                # Check if 'any' type is used in struct fields (not allowed)
+                for fty, fname in node[2]:
+                    if self._type_contains_any(fty):
+                        self.add_error("E043", f"Struct field '{fname}' cannot have type '{fty}'", loc)
                 self.structs[node[1]] = node[2]
             elif node[0] == 'enum_decl':
                 self.enums[node[1]] = node[2]
             elif node[0] == 'type_decl':
                 ty_name = node[1]
                 if ty_name in self.types: self.add_error("E015", ty_name, loc)
+                # Check if 'any' type is used in type declaration (not allowed)
+                for member_ty in node[2]:
+                    if self._type_contains_any(member_ty):
+                        self.add_error("E043", f"Type declaration '{ty_name}' cannot contain 'any' type", loc)
                 self.types[ty_name] = node[2]  # Store list of allowed types
             elif node[0] == 'pub_var':
                 ty, name = node[1], node[2]

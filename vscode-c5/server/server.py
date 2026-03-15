@@ -72,6 +72,11 @@ class LSPAnalyzer(SemanticAnalyzer):
             self.symbol_types[node[2]] = node[1]
         elif tag == 'foreach':
             self.symbol_types[node[1]] = 'int'
+        elif tag == 'forstruct':
+            # forstruct (field, name in struct) { ... }
+            # node[1] = field variable name, node[2] = name variable name, node[3] = struct expression
+            self.symbol_types[node[1]] = 'any'  # field can be any type
+            self.symbol_types[node[2]] = 'string'  # name is always a string
         elif tag == 'try_catch_stmt':
             self.symbol_types[node[2]] = 'string'
         elif tag == 'call':
@@ -81,6 +86,13 @@ class LSPAnalyzer(SemanticAnalyzer):
                 name = func_node[1]
                 if name in self.macros:
                     # It's a macro, just analyze arguments
+                    for arg in node[2]:
+                        self._analyze_node(arg)
+                    return
+                # Handle built-in functions like gettype
+                elif name == 'gettype':
+                    # gettype returns a type from c5core::types enum
+                    # Just analyze arguments, no special handling needed
                     for arg in node[2]:
                         self._analyze_node(arg)
                     return
@@ -115,7 +127,12 @@ class LSPAnalyzer(SemanticAnalyzer):
             if isinstance(node, tuple):
                 if node[0] in ('func', 'extern'):
                     self.func_signatures[node[2]] = (node[1], node[3])
-                    for pty, pname in node[3]: self.symbol_types[pname] = pty
+                    for pty, pname in node[3]:
+                        # Handle 'any' type - it's a special type that can only be used in function arguments
+                        if pty == 'any':
+                            self.symbol_types[pname] = 'any'
+                        else:
+                            self.symbol_types[pname] = pty
                 elif node[0] == 'macro':
                     self.macros[node[1]] = node[2]
 
@@ -171,6 +188,28 @@ class LSPAnalyzer(SemanticAnalyzer):
             ty, name = node[1], node[2]
             info = f"{ty} {name}"
             self._apply_info_to_source(name, line, col, info)
+        elif tag == 'forstruct':
+            # forstruct (field, name in struct) { ... }
+            # node[1] = field variable name, node[2] = name variable name, node[3] = struct expression
+            field_name = node[1]
+            name_var = node[2]
+            # Add semantic tokens for the loop variables
+            self.semantic_tokens.append((line, col, len(field_name), 0))  # type token for field
+            self.semantic_tokens.append((line, col + len(field_name) + 2, len(name_var), 0))  # type token for name
+            # Process the struct expression
+            self._collect_tokens_and_symbols(node[3])
+            # Process the loop body
+            self._collect_tokens_and_symbols(node[4])
+        elif tag == 'call':
+            # Handle gettype function specially
+            func_node = node[1]
+            if isinstance(func_node, tuple) and func_node[0] == 'id' and func_node[1] == 'gettype':
+                # gettype is a built-in function, add semantic token
+                self.semantic_tokens.append((line, col, len('gettype'), 3))  # function token
+                # Process arguments
+                for arg in node[2]:
+                    self._collect_tokens_and_symbols(arg)
+                return
 
         for child in node:
             if isinstance(child, (tuple, list)):
@@ -216,6 +255,25 @@ class LSPAnalyzer(SemanticAnalyzer):
             base, member = full_name.rsplit('::', 1)
             if base in self.enums and member in self.enums[base]:
                 info = f"enum variant {full_name}"
+        
+        # Handle c5core namespace and its members
+        if not info and full_name.startswith('c5core::'):
+            parts = full_name.split('::')
+            if len(parts) == 2:
+                # c5core::types or c5core::ptrtypes
+                if parts[1] in ('types', 'ptrtypes'):
+                    t_idx = 4  # namespace token
+                    info = f"namespace {full_name}"
+            elif len(parts) == 3:
+                # c5core::types::INT, c5core::types::STRING, etc.
+                if parts[1] == 'types':
+                    # These are type constants from the c5core::types enum
+                    t_idx = 2  # enum token
+                    info = f"enum variant {full_name}"
+                elif parts[1] == 'ptrtypes':
+                    # These are pointer type constants from the c5core::ptrtypes enum
+                    t_idx = 2  # enum token
+                    info = f"enum variant {full_name}"
         
         if t_idx != -1: self.semantic_tokens.append((line, col, length, t_idx))
         if info:

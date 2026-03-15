@@ -3,7 +3,7 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
         # Track known type names for disambiguation (built-in + user-defined)
-        self.type_names = {'int', 'char', 'float', 'string', 'void'}
+        self.type_names = {'int', 'char', 'float', 'string', 'void', 'any'}
 
     def peek(self):
         return self.tokens[self.pos]
@@ -237,7 +237,7 @@ class Parser:
             else:
                 candidate = candidate[9:]
         # Check if candidate is a built-in type or a known user-defined type
-        if candidate in ('int', 'char', 'float', 'string', 'void'):
+        if candidate in ('int', 'char', 'float', 'string', 'void', 'any'):
             return True
         if candidate in self.type_names:
             return True
@@ -290,6 +290,9 @@ class Parser:
         if self.peek().type == 'VOID':
             self.consume('VOID')
             base = 'void'
+        elif self.peek().type == 'ANY':
+            self.consume('ANY')
+            base = 'any'
         else:
             base = self.consume('ID').value
             if self.peek().type == 'COLONCOLON':
@@ -456,6 +459,23 @@ class Parser:
         self.consume('RBRACE')
         return ('foreach_stmt', index_var, value_var, array_expr, body, loc)
 
+    def parse_forstruct_stmt(self):
+        loc = self._loc()
+        self.consume('FORSTRUCT')
+        self.consume('LPAREN')
+        field_var = self.consume('ID').value
+        self.consume('COMMA')
+        name_var = self.consume('ID').value
+        self.consume('IN')
+        struct_expr = self.parse_expr()
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        body = []
+        while self.peek().type != 'RBRACE':
+            body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        return ('forstruct_stmt', field_var, name_var, struct_expr, body, loc)
+
     def parse_switch_stmt(self):
         loc = self._loc()
         self.consume('SWITCH')
@@ -526,6 +546,8 @@ class Parser:
             return self.parse_for_stmt()
         if self.peek().type == 'FOREACH':
             return self.parse_foreach_stmt()
+        if self.peek().type == 'FORSTRUCT':
+            return self.parse_forstruct_stmt()
         if self.peek().type == 'DO':
             return self.parse_do_while_stmt()
         if self.peek().type == 'BREAK':
@@ -536,8 +558,8 @@ class Parser:
         loc = self._loc()
         is_decl = False
         pos = self.pos
-        # Check for signed/unsigned/const modifiers
-        if self.peek().type in ('SIGNED', 'UNSIGNED', 'CONST'):
+        # Check for signed/unsigned/const modifiers, or type keywords (void, any)
+        if self.peek().type in ('SIGNED', 'UNSIGNED', 'CONST', 'VOID', 'ANY'):
             is_decl = True
         elif self.peek().type == 'ID':
             # Skip base type ID
@@ -783,6 +805,19 @@ class Parser:
                 raise SyntaxError(f"Expected ')' after sizeof expression at line {self.peek().line}")
             self.consume('RPAREN')
             return ('sizeof_expr', expr, loc)
+        # Check for gettype
+        if self.peek().type == 'GETTYPE':
+            self.consume('GETTYPE')
+            # gettype requires parentheses
+            if self.peek().type != 'LPAREN':
+                raise SyntaxError(f"Expected '(' after gettype at line {self.peek().line}")
+            self.consume('LPAREN')
+            # gettype always takes an expression
+            expr = self.parse_expr()
+            if self.peek().type != 'RPAREN':
+                raise SyntaxError(f"Expected ')' after gettype expression at line {self.peek().line}")
+            self.consume('RPAREN')
+            return ('gettype', expr, loc)
         # Check for cast: (type) unary_expression
         if self.peek().type == 'LPAREN':
             saved_pos = self.pos
@@ -878,7 +913,17 @@ class Parser:
                 self.consume('COLONCOLON')
                 parts.append(self.consume('ID').value)
             if len(parts) == 1:
-                target = ('id', parts[0], loc)
+                # Check if this is gettype followed by LPAREN
+                if parts[0] == 'gettype' and self.peek().type == 'LPAREN':
+                    # Parse as gettype expression
+                    self.consume('LPAREN')
+                    expr = self.parse_expr()
+                    if self.peek().type != 'RPAREN':
+                        raise SyntaxError(f"Expected ')' after gettype expression at line {self.peek().line}")
+                    self.consume('RPAREN')
+                    target = ('gettype', expr, loc)
+                else:
+                    target = ('id', parts[0], loc)
             else:
                 base = '::'.join(parts[:-1])
                 name = parts[-1]

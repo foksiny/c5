@@ -49,6 +49,10 @@ c5c mylib.c5 --lib dynamic -o mylib
 # Analyze source files for errors and warnings without compiling
 c5c main.c5 -a
 c5c main.c5 --analyze
+
+# Compile and debug the executable (shows crash details if it fails)
+c5c main.c5 -d
+c5c main.c5 --debug
 ```
 
 ## 📚 Library System
@@ -284,6 +288,126 @@ c5c mylib.c5 --lib dynamic -a
 
 ---
 
+## 🐛 Debug Mode
+
+The `--debug` (or `-d`) flag compiles your program and then runs it automatically, analyzing any crashes that occur. This is extremely useful for:
+
+- **Crash analysis**: Automatically detect and analyze segmentation faults, aborts, and other crashes
+- **Intelligent debugging**: Get detailed information about where and why your program crashed
+- **Source line mapping**: See the exact source code line that caused the crash (when debug symbols are available)
+- **Assembly analysis**: View the assembly code around the crash location
+- **Register inspection**: See all CPU register values at the time of the crash
+- **Backtrace**: View the call stack leading to the crash
+
+### Usage
+
+```bash
+# Compile and debug (runs automatically, shows crash details if it fails)
+c5c main.c5 -d
+c5c main.c5 --debug
+
+# Debug with custom output name
+c5c main.c5 -o myapp -d
+
+# Debug with include paths
+c5c main.c5 -I ./headers -d
+```
+
+### What It Shows
+
+When a crash is detected, the debugger shows:
+
+1. **Signal Information**: Type of crash (SIGSEGV, SIGABRT, SIGFPE, etc.) and description
+2. **Crash Address**: The memory address where the crash occurred
+3. **Function**: The function containing the crash
+4. **Source Location**: File and line number (if debug symbols are available)
+5. **Source Code Context**: The source code around the crash location
+6. **Disassembly**: Assembly code around the crash address
+7. **Backtrace**: Call stack showing how the program reached the crash
+8. **Registers**: All CPU register values at the time of the crash
+9. **Intelligent Analysis**: Smart suggestions about what likely caused the crash
+
+### Example Output
+
+```
+[DEBUG MODE]
+============================================================
+[DEBUG] Running executable: /path/to/executable
+[DEBUG] Timeout: 30 seconds
+------------------------------------------------------------
+
+[CRASH DETECTED]
+============================================================
+
+Signal: SIGSEGV - Segmentation fault
+Return Code: -11
+
+This is a SEGMENTATION FAULT!
+The program tried to access memory it doesn't have permission to access.
+
+Common causes:
+  - Dereferencing a NULL pointer
+  - Accessing freed memory
+  - Buffer overflow
+  - Stack overflow
+  - Accessing memory out of bounds
+
+[ANALYZING CRASH...]
+
+Crash Address: 0x555555555163
+Function: main
+
+[INTELLIGENT ANALYSIS]
+------------------------------------------------------------
+• Likely NULL pointer dereference - the program tried to read from address 0x0
+
+[ASSEMBLY FILE CONTEXT]
+------------------------------------------------------------
+(Address not found in assembly file - showing main function)
+
+>>> main:
+        push %rbp
+        mov %rsp, %rbp
+        sub $528, %rsp
+        xor %rax, %rax
+        mov %rax, -8(%rbp)
+        lea .LC0(%rip), %rax
+        mov %rax, %rdi
+        mov $0, %eax
+        call printf@PLT
+        mov -8(%rbp), %rax
+        mov (%rax), %rax  <-- NULL pointer dereference!
+        mov %rax, -16(%rbp)
+        ...
+
+[BACKTRACE]
+------------------------------------------------------------
+#0  0x0000555555555163 in main ()
+
+[REGISTERS AT CRASH]
+------------------------------------------------------------
+rax            0x0                 0
+rbx            0x7fffffffdd18      140737488346392
+rcx            0x0                 0
+...
+
+============================================================
+[DEBUGGING COMPLETE]
+============================================================
+```
+
+### Requirements
+
+The debug mode uses standard Linux debugging tools:
+- **GDB**: For crash analysis and backtrace (optional, but recommended)
+- **addr2line**: For source line mapping (optional)
+- **objdump**: For disassembly (optional)
+- **nm**: For symbol table extraction (optional)
+
+If these tools are not available, the debugger will still work but with reduced functionality.
+
+---
+
 ## 🎨 Syntax Highlighting
 
 C5 comes with syntax highlighting support for popular editors.
@@ -376,8 +500,144 @@ C5 uses explicit bit-widths for its types to ensure predictability across platfo
 | `float<32>` | 32-bit floating point | - |
 | `string` | UTF-8 encoded string | - |
 | `void` | Empty return type | - |
+| `any` | Generic type for function parameters (constant by default) | - |
 
-### 2. Signed and Unsigned Modifiers
+### 2. The `any` Type
+
+The `any` type is a special generic type that can only be used as a function parameter. It allows a function to accept arguments of any type, enabling polymorphic behavior without templates or generics.
+
+**Key characteristics:**
+- **Function parameters only**: `any` can only be used in function parameter declarations
+- **Constant by default**: Parameters of type `any` cannot be reassigned within the function
+- **Type introspection**: Use `gettype()` to determine the actual type at runtime
+- **Type casting**: Cast to the appropriate type before use
+
+**Example:**
+```c5
+include <std.c5h>
+
+void print(any msg) {
+    if (gettype(msg) == c5core::types::INT) {
+        std::printf("%d\n", (int)msg);
+    } else if (gettype(msg) == c5core::types::FLOAT) {
+        std::printf("%f\n", (float)msg);
+    } else if (gettype(msg) == c5core::types::STRING) {
+        std::printf("%s\n", (string)msg);
+    }
+}
+
+void main() {
+    print(10);
+    print(10.5);
+    print("hello");
+}
+```
+
+### 3. The `gettype()` Function
+
+The `gettype()` built-in function returns the type of a value as an enum constant from the `c5core::types` and `c5core::ptrtypes` namespace. This enables runtime type checking and polymorphic behavior.
+
+**Syntax:**
+```c5
+gettype(expression)
+```
+
+**Return value:** A constant from `c5core::types` enum representing the type.
+
+**Example:**
+```c5
+include <std.c5h>
+
+void main() {
+    int x = 42;
+    if (gettype(x) == c5core::types::INT) {
+        std::printf("x is an integer\n");
+    }
+}
+```
+
+### 4. The `c5core` Namespace
+
+The `c5core` namespace contains built-in type enums and utilities for type introspection.
+
+#### `c5core::types` Enum
+
+Contains constants for all basic C5 types:
+
+| Constant | Description |
+| :--- | :--- |
+| `INT` | Integer types (`int`, `int<8>`, `int<16>`, `int<32>`, `int<64>`) |
+| `FLOAT` | Floating-point types (`float`, `float<32>`, `float<64>`) |
+| `STRING` | String type |
+| `CHAR` | Character type |
+| `STRUCT` | Struct types |
+| `UNION` | Union types |
+| `TYPE` | User-defined type aliases |
+| `ENUM` | Enum types |
+| `VOID` | Void type |
+| `ARRAY` | Array types (`array<T>`) |
+| `MATRIX` | Multi-dimensional arrays |
+
+#### `c5core::ptrtypes` Enum
+
+Contains the same constants as `c5core::types`, but for pointer types. Use this when checking the type of a pointer value.
+
+**Example:**
+```c5
+include <std.c5h>
+
+void main() {
+    int* ptr = NULL;
+    if (gettype(ptr) == c5core::types::POINTER) {
+        // Check what type it points to
+        if (gettype(*ptr) == c5core::ptrtypes::INT) {
+            std::printf("ptr points to an integer\n");
+        }
+    }
+}
+```
+
+### 5. The `forstruct` Loop
+
+The `forstruct` loop iterates over the fields of a struct, providing access to each field's value and name. This is useful for reflection, serialization, and generic struct processing.
+
+**Syntax:**
+```c5
+forstruct (field_var, name_var in struct_expr) {
+    // field_var: the value of the current field
+    // name_var: the name of the current field as a string
+}
+```
+
+**Example:**
+```c5
+include <std.c5h>
+
+struct Person {
+    string name;
+    int age;
+};
+
+void main() {
+    Person p = {"John", 30};
+    
+    forstruct (field, name in p) {
+        if (gettype(field) == c5core::types::STRING) {
+            std::printf("%s: %s\n", name, (string)field);
+        } else if (gettype(field) == c5core::types::INT) {
+            std::printf("%s: %d\n", name, (int)field);
+        }
+    }
+}
+```
+
+**Output:**
+```
+name: John
+age: 30
+```
+
+### 6. Signed and Unsigned Modifiers
 C5 supports `signed` and `unsigned` modifiers for integer types to explicitly specify the sign behavior:
 
 ```c
@@ -407,7 +667,7 @@ void main() {
 - **Unsigned types**: Use zero-extension when loading smaller values (e.g., `movzbq`, `movzwq`, `movl`)
 - By default, `int`, `int<8>`, `int<16>`, `int<32>`, `int<64>`, and `char` are signed unless explicitly marked `unsigned`
 
-### 3. Variables & Constants
+### 7. Variables & Constants
 ```c
 int<32> age = 25;
 string name = "Jose";
@@ -479,7 +739,7 @@ const float<32> PI = 3.14159;
 const char NEWLINE = '\n';
 ```
 
-### 4. Control Flow
+### 8. Control Flow
 C5 supports standard C control structures:
 - `if` / `else`
 - `while` loops
@@ -657,7 +917,7 @@ void main() {
 }
 ```
 
-### 5. Directives & Namespacing
+### 9. Directives & Namespacing
 When you `include <std.c5h>`, all functions inside are placed in the `std::` namespace.
 ```c
 include <std.c5h>
@@ -680,7 +940,7 @@ void main() {
 ```
 The directive is stateful; use `#namespaces 1;` to re-enable namespacing for further includes.
 
-### 6. String Power
+### 10. String Power
 Strings in C5 are more than just pointers; they support arithmetic and built-in methods.
 ```c
 string s = "Hello";
@@ -738,7 +998,7 @@ void main() {
 - `.length()` method: Returns the string length (available for both `string` and `char*`)
 - Returns `char` type when indexing into strings
 
-### 7. Structs & Enums
+### 11. Structs & Enums
 ```c
 struct Point {
     int<32> x;
@@ -753,7 +1013,7 @@ void main() {
 }
 ```
 
-### 8. Arrow Operator
+### 12. Arrow Operator
 When accessing struct members through a pointer, use the `->` operator:
 ```c
 include <std.c5h>
@@ -775,7 +1035,7 @@ void main() {
 }
 ```
 
-### 9. Arrays
+### 13. Arrays
 C5 provides a dynamic `array<T>` type with built-in methods for managing collections:
 ```c
 include <std.c5h>
@@ -815,7 +1075,7 @@ array<int<32>> append_value(array<int<32>> arr) {
 }
 ```
 
-### 10. C-Style Fixed-Size Arrays
+### 14. C-Style Fixed-Size Arrays
 C5 supports C-style fixed-size arrays with stack allocation and compile-time size checking. These arrays are declared with the syntax `type name[size]` and can be initialized with initializer lists or string literals (for char arrays).
 
 #### Syntax and Declaration
@@ -998,7 +1258,7 @@ You can also explicitly use pointer types in the parameter declaration to make t
 
 ---
 
-### 11. Matrix Support
+### 15. Matrix Support
 C5 supports multi-dimensional arrays (matrices) of any type, including structs, enums, unions, and even other arrays. Matrices are represented as nested `array<array<T>>` types and can be nested to any depth.
 
 ```c
@@ -1037,7 +1297,7 @@ void main() {
 - **Heap Allocation**: Like regular arrays, matrices manage their memory on the heap.
 - **Full Type Compatibility**: Supports matrices of any C5 type, including nested aggregates.
 
-### 12. Pointers & Memory
+### 16. Pointers & Memory
 C5 provides full access to memory with C-like syntax.
 ```c
 include <std.c5h>
@@ -1054,7 +1314,7 @@ void main() {
 }
 ```
 
-### 13. Public Variables (Globals)
+### 17. Public Variables (Globals)
 Use the `let` keyword at the top level to declare global variables.
 ```c
 let int<32> counter = 0;
@@ -1065,7 +1325,7 @@ void main() {
 }
 ```
 
-### 14. Macros
+### 18. Macros
 C5 supports simple macros that are expanded at compile time. Macros are defined using the `macro` keyword and work like inline functions.
 
 ```c
@@ -1088,7 +1348,7 @@ void main() {
 - **Zero overhead**: Macros are expanded at compile time, no runtime cost
 - **Type flexibility**: Macros work with any compatible types
 
-### 15. Lambda Expressions
+### 19. Lambda Expressions
 C5 supports lambda expressions (anonymous functions) that can be assigned to variables and called like regular functions.
 
 ```c
@@ -1134,7 +1394,7 @@ void main() {
 }
 ```
 
-### 16. Type Definitions
+### 20. Type Definitions
 
 C5 supports user-defined type aliases and union-like types using the `type` keyword. This allows you to create a new type that can hold values of any of the specified underlying types.
 
@@ -1327,7 +1587,7 @@ Type definitions are global and must be declared before use. They are stored in 
 - **Computed Sizes**: The size of a union type is automatically computed as the maximum size of its members.
 - **Recursive Members**: You can include struct and enum types as members of a union by using their names (e.g., `Point` if a struct `Point` is defined).
 
-### 17. Sizeof Operator
+### 21. Sizeof Operator
 
 C5 provides the `sizeof` operator to query the size of a type or an expression at compile time. The operator has two forms:
 
@@ -1381,7 +1641,7 @@ Without this behavior, the analyzer would incorrectly warn that `value` is dead 
 **Note:** `sizeof` is evaluated entirely at compile time and does not generate any runtime code to compute the size. The size is embedded as an immediate constant in the generated assembly.
 
 ---
-### 18. Exception Handling
+### 22. Exception Handling
 
 C5 supports exception handling through `try-catch` blocks, allowing you to handle runtime errors gracefully.
 
@@ -1421,7 +1681,7 @@ void main() {
 
 ---
 
-### 19. Type Width Checking
+### 23. Type Width Checking
 
 C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
 
@@ -1455,7 +1715,7 @@ These checks help prevent accidental overflow and data loss.
 
 ---
 
-### 20. Operators
+### 24. Operators
 
 C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, and comparison operations. All operators follow C-like precedence and associativity.
 
@@ -1537,7 +1797,7 @@ void main() {
 }
 ```
 
-### 21. Type Conversions (Casts)
+### 25. Type Conversions (Casts)
 
 C5 supports explicit type conversions (casts) using the syntax `(target_type) expression`. Casts allow you to convert a value from one type to another, overriding the compiler's default type checking.
 
@@ -1600,7 +1860,7 @@ void main() {
 - The compiler will still perform some checks (e.g., ensuring the target type is known).
 - For narrowing conversions (e.g., `int<64>` to `int<8>`), the value is truncated according to the target type's signedness.
 
-### 22. Syscall Built-in
+### 26. Syscall Built-in
 
 C5 provides a built-in `syscall` function to perform direct system calls on x86_64 Linux.
 

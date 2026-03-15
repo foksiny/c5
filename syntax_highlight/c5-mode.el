@@ -28,7 +28,8 @@
   '("include" "libinclude" "let" "const" "macro" "type" "fnct"
     "if" "else" "switch" "case" "default" "with" "as"
     "while" "do" "for" "foreach" "in" "break" "syscall"
-    "return" "try" "catch" "struct" "enum" "signed" "unsigned")
+    "return" "try" "catch" "struct" "enum" "signed" "unsigned"
+    "forstruct")
   "Keywords for C5.")
 
 (defvar c5-constants
@@ -36,7 +37,7 @@
   "Constants for C5.")
 
 (defvar c5-types
-  '("void" "int" "float" "char" "string" "array")
+  '("void" "int" "float" "char" "string" "array" "any")
   "Built-in types for C5.")
 
 (defvar c5-methods
