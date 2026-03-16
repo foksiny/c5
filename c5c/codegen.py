@@ -1,6 +1,7 @@
 class CodeGen:
-    def __init__(self, optimizer=None, try_errors_map=None):
+    def __init__(self, optimizer=None, try_errors_map=None, weak_symbols=None):
         self.optimizer = optimizer
+        self.weak_symbols = weak_symbols or set()
         self.rodata = []
         self.text = []
         self.string_literals = {}
@@ -648,6 +649,8 @@ class CodeGen:
                 self.global_vars[name] = ty
                 sz = self.sizeof(ty)
                 mangled = self.mangle(name)
+                if name in self.weak_symbols:
+                    self.data.append(f".weak {mangled}")
                 self.data.append(f".global {mangled}")
                 self.data.append(f"{mangled}:")
                 if init is None:
@@ -976,6 +979,8 @@ __c5_str_replace:
         self.current_func_ret_ty = ty  # Store return type for struct returns
         self.func_has_return = False  # Track if function has a return statement
         
+        if name in self.weak_symbols:
+            self.text.append(f".weak {mangled_name}")
         self.text.append(f".global {mangled_name}")
         self.text.append(f".type {mangled_name}, @function")
         self.text.append(f"{mangled_name}:")
@@ -2083,11 +2088,20 @@ __c5_str_replace:
                 if target_ty == 'float<32>': self.text.append("    movss %xmm0, (%rsp)")
                 else: self.text.append("    movsd %xmm0, (%rsp)")
             elif target_ty and target_ty.startswith('array<'):
-                # Array returned in registers: rax=ptr, rdx=len, rcx=cap
-                # Push them in correct order for array struct on stack
-                self.text.append("    push %rcx")  # cap
-                self.text.append("    push %rdx")  # len
-                self.text.append("    push %rax")  # ptr
+                # Check if gen_expr returned a pointer to the array struct (lvalue)
+                # vs the array fields in registers (rvalue from function call)
+                if res_ty and res_ty.startswith('array<') and res_ty.endswith('*'):
+                    # Lvalue: %rax is a pointer to the 24-byte array struct (ptr, len, cap)
+                    # Dereference to load the fields onto the stack
+                    self.text.append("    pushq 16(%rax)")  # cap
+                    self.text.append("    pushq 8(%rax)")   # len
+                    self.text.append("    pushq (%rax)")    # ptr
+                else:
+                    # Rvalue (e.g., function return): fields are in registers
+                    # rax=ptr, rdx=len, rcx=cap
+                    self.text.append("    push %rcx")  # cap
+                    self.text.append("    push %rdx")  # len
+                    self.text.append("    push %rax")  # ptr
             elif self._is_aggregate(target_ty):
                 # Copy existing aggregate to stack (for structs returned by pointer)
                 sz = self.sizeof(target_ty)
@@ -2154,10 +2168,14 @@ __c5_str_replace:
                 f_ty = finfo['type']
                 self._gen_init_list_recursive(item, f_ty)
                 p_sz = self.sizeof(f_ty) if self._is_aggregate(f_ty) else 8
-                self.text.append(f"    lea {p_sz + finfo['offset']}(%rsp), %rdi") # dest
-                self.text.append("    mov %rsp, %rsi") # src
-                self.text.append(f"    mov ${self.sizeof(f_ty)}, %rdx")
-                self.text.append("    call memcpy@PLT")
+                # For pointer types, just move the pointer value directly
+                if f_ty.endswith('*'):
+                    self.text.append(f"    mov %rax, {finfo['offset']}(%rsp)")
+                else:
+                    self.text.append(f"    lea {p_sz + finfo['offset']}(%rsp), %rdi") # dest
+                    self.text.append("    mov %rsp, %rsi") # src
+                    self.text.append(f"    mov ${self.sizeof(f_ty)}, %rdx")
+                    self.text.append("    call memcpy@PLT")
                 self.text.append(f"    add ${p_sz}, %rsp")
             return target_ty
             
@@ -3131,27 +3149,30 @@ __c5_str_replace:
                 else:
                     self.text.append(f"    movsd {addr}, %xmm0")
             else:
+                # Check if type is a pointer type - load pointer value directly
+                if ty.endswith('*'):
+                    self.text.append(f"    mov {addr}, %rax")
                 # Check if type is unsigned for proper extension
-                is_unsigned = ty.startswith('unsigned ')
-                base_ty = ty.split(' ', 1)[1] if is_unsigned else ty
-                
-                if sz == 1:
-                    if is_unsigned:
+                elif ty.startswith('unsigned '):
+                    base_ty = ty.split(' ', 1)[1]
+                    if sz == 1:
                         self.text.append(f"    movzbq {addr}, %rax")
-                    else:
-                        self.text.append(f"    movsbq {addr}, %rax")
-                elif sz == 2:
-                    if is_unsigned:
+                    elif sz == 2:
                         self.text.append(f"    movzwq {addr}, %rax")
-                    else:
-                        self.text.append(f"    movswq {addr}, %rax")
-                elif sz == 4:
-                    if is_unsigned:
+                    elif sz == 4:
                         self.text.append(f"    movl {addr}, %eax")
                     else:
-                        self.text.append(f"    movslq {addr}, %rax")
+                        self.text.append(f"    mov {addr}, %rax")
                 else:
-                    self.text.append(f"    mov {addr}, %rax")
+                    # Signed integer types
+                    if sz == 1:
+                        self.text.append(f"    movsbq {addr}, %rax")
+                    elif sz == 2:
+                        self.text.append(f"    movswq {addr}, %rax")
+                    elif sz == 4:
+                        self.text.append(f"    movslq {addr}, %rax")
+                    else:
+                        self.text.append(f"    mov {addr}, %rax")
             return ty
         elif node[0] == 'assign':
             left, right = node[1], node[2]
@@ -3723,17 +3744,54 @@ __c5_str_replace:
                         
                         # Store value at data[len]
                         if is_struct:
-                            # Use memcpy to copy struct data
+                            # For structs with pointer fields, copy field-by-field to preserve pointers
                             self.text.append("    pop %r11")  # restore src addr
                             self.text.append(f"    mov {arr_ref(0)}, %rdi")  # dest = data ptr
                             self.text.append(f"    mov {arr_ref(8)}, %r10") # current len
                             self.text.append(f"    imul ${elem_sz}, %r10")
                             self.text.append("    add %r10, %rdi")  # dest = data + len*elem_sz
-                            self.text.append("    mov %r11, %rsi")  # src
-                            self.text.append(f"    mov ${elem_sz}, %rdx")  # size
-                            self.text.append("    sub $8, %rsp")
-                            self.text.append("    call memcpy@PLT")
-                            self.text.append("    add $8, %rsp")
+                            
+                            # Copy struct field by field
+                            if elem_ty in self.structs:
+                                st = self.structs[elem_ty]
+                                for fname, finfo in st['fields'].items():
+                                    f_ty = finfo['type']
+                                    f_off = finfo['offset']
+                                    if f_ty.endswith('*'):
+                                        # Pointer field: just copy the pointer value
+                                        self.text.append(f"    mov {f_off}(%r11), %rax")
+                                        self.text.append(f"    mov %rax, {f_off}(%rdi)")
+                                    else:
+                                        # Non-pointer field: copy bytes
+                                        f_sz = self.sizeof(f_ty)
+                                        if f_sz == 1:
+                                            self.text.append(f"    movb {f_off}(%r11), %al")
+                                            self.text.append(f"    movb %al, {f_off}(%rdi)")
+                                        elif f_sz == 2:
+                                            self.text.append(f"    movw {f_off}(%r11), %ax")
+                                            self.text.append(f"    movw %ax, {f_off}(%rdi)")
+                                        elif f_sz == 4:
+                                            self.text.append(f"    movl {f_off}(%r11), %eax")
+                                            self.text.append(f"    movl %eax, {f_off}(%rdi)")
+                                        elif f_sz == 8:
+                                            self.text.append(f"    mov {f_off}(%r11), %rax")
+                                            self.text.append(f"    mov %rax, {f_off}(%rdi)")
+                                        else:
+                                            # Larger field: use memcpy for this field
+                                            self.text.append(f"    lea {f_off}(%r11), %rsi")
+                                            self.text.append(f"    lea {f_off}(%rdi), %rdi")
+                                            self.text.append(f"    mov ${f_sz}, %rdx")
+                                            self.text.append("    sub $8, %rsp")
+                                            self.text.append("    call memcpy@PLT")
+                                            self.text.append("    add $8, %rsp")
+                            else:
+                                # Fallback to memcpy for non-struct types
+                                self.text.append("    mov %r11, %rsi")  # src
+                                self.text.append(f"    mov ${elem_sz}, %rdx")  # size
+                                self.text.append("    sub $8, %rsp")
+                                self.text.append("    call memcpy@PLT")
+                                self.text.append("    add $8, %rsp")
+                            
                             if push_temp_size:
                                 self.text.append(f"    add ${push_temp_size}, %rsp")
                         else:

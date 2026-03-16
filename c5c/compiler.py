@@ -209,17 +209,23 @@ def _process_includes(ast, dir_path, include_paths, global_path, processed_files
         processed_files = set()
         
     if current_file_path and current_file_path in processed_files:
-        return [], set(), set(), []
+        return [], set(), set(), [], set()
 
     new_ast = []
     library_funcs = set()
     library_vars = set()
     lib_includes = []
+    weak_symbols = set()
     
     # Check if current AST has detect once
     has_detect_once = any(isinstance(n, tuple) and n[0] == 'detect_once' for n in ast)
     if has_detect_once and current_file_path:
         processed_files.add(current_file_path)
+        # Mark all globals in THIS file as weak
+        for node in ast:
+            if isinstance(node, tuple):
+                if node[0] in ('func', 'pub_var'):
+                    weak_symbols.add(node[2])
 
     for node in ast:
         if isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'namespaces':
@@ -250,7 +256,7 @@ def _process_includes(ast, dir_path, include_paths, global_path, processed_files
             inc_ast = Parser(inc_tokens).parse_program()
             
             # Recursive process
-            res_ast, res_funcs, res_vars, res_libs = _process_includes(
+            res_ast, res_funcs, res_vars, res_libs, res_weak = _process_includes(
                 inc_ast, os.path.dirname(inc_path), include_paths, global_path, processed_files, use_namespaces, inc_path
             )
             
@@ -264,13 +270,15 @@ def _process_includes(ast, dir_path, include_paths, global_path, processed_files
                     else:
                         final_inc_ast.append(n)
                 
-                # Also namespace tracked funcs/vars
+                # Also namespace tracked funcs/vars/weak
                 library_funcs.update({f"{namespace}::{f}" for f in res_funcs})
                 library_vars.update({f"{namespace}::{v}" for v in res_vars})
+                weak_symbols.update({f"{namespace}::{s}" for s in res_weak})
             else:
                 final_inc_ast = res_ast
                 library_funcs.update(res_funcs)
                 library_vars.update(res_vars)
+                weak_symbols.update(res_weak)
                 
             lib_includes.extend(res_libs)
             new_ast.extend(final_inc_ast)
@@ -290,7 +298,7 @@ def _process_includes(ast, dir_path, include_paths, global_path, processed_files
                     library_vars.add(node[2])
             new_ast.append(node)
             
-    return new_ast, library_funcs, library_vars, lib_includes
+    return new_ast, library_funcs, library_vars, lib_includes, weak_symbols
 
 def compile_file(filepath, include_paths=None, is_library=False):
     if include_paths is None: include_paths = []
@@ -303,7 +311,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
     dir_path = os.path.dirname(os.path.abspath(filepath))
     global_path = os.path.expanduser("~/.c5/include")
     
-    new_ast, library_funcs, library_vars, lib_includes = _process_includes(
+    new_ast, library_funcs, library_vars, lib_includes, weak_symbols = _process_includes(
         ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
     )
     
@@ -330,7 +338,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols)
     asm = cg.generate(optimized_ast)
     return asm, lib_includes
 
@@ -348,6 +356,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     primary_file = filepaths[0]
     library_funcs = set()  # Track functions from non-primary files
     library_vars = set()   # Track variables from library files (no dead code warnings)
+    weak_symbols = set()   # Track weak symbols from files with detect once
     lib_includes = []      # Collect library linking directives
     use_namespaces = True
     processed_files = set()
@@ -366,7 +375,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
         # If this is not the primary file, track its functions as library functions
         is_primary = (filepath == primary_file)
         
-        res_ast, res_funcs, res_vars, res_libs = _process_includes(
+        res_ast, res_funcs, res_vars, res_libs, res_weak = _process_includes(
             ast, dir_path, include_paths, global_path, processed_files, use_namespaces, os.path.abspath(filepath)
         )
         
@@ -384,18 +393,33 @@ def compile_files(filepaths, include_paths=None, is_library=False):
             # Also namespace tracked funcs/vars so they match
             library_funcs.update({f"{namespace}::{f}" for f in res_funcs})
             library_vars.update({f"{namespace}::{v}" for v in res_vars})
+            weak_symbols.update({f"{namespace}::{s}" for s in res_weak})
             
             # Also track functions and variables from this non-primary file itself (namespaced)
+            # Note: we check if the file itself has detect_once to mark its own globals as weak
+            has_detect_once = any(isinstance(n, tuple) and n[0] == 'detect_once' for n in ast)
             for node in ast:
                 if isinstance(node, tuple):
                     if node[0] == 'func':
-                        library_funcs.add(f"{namespace}::{node[2]}")
+                        name = f"{namespace}::{node[2]}"
+                        library_funcs.add(name)
+                        if has_detect_once: weak_symbols.add(name)
                     elif node[0] == 'pub_var':
-                        library_vars.add(f"{namespace}::{node[2]}")
+                        name = f"{namespace}::{node[2]}"
+                        library_vars.add(name)
+                        if has_detect_once: weak_symbols.add(name)
         else:
             # For primary file, only track funcs/vars from its includes
             library_funcs.update(res_funcs)
             library_vars.update(res_vars)
+            weak_symbols.update(res_weak)
+            
+            # Check if primary file itself has detect_once
+            has_detect_once = any(isinstance(n, tuple) and n[0] == 'detect_once' for n in ast)
+            if has_detect_once:
+                for node in ast:
+                    if isinstance(node, tuple) and node[0] in ('func', 'pub_var'):
+                        weak_symbols.add(node[2])
 
         lib_includes.extend(res_libs)
         combined_ast.extend(res_ast)
@@ -423,7 +447,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols)
     asm = cg.generate(optimized_ast)
     return asm, lib_includes
 
@@ -447,7 +471,7 @@ def analyze_file(filepath, include_paths=None, is_library=False):
     dir_path = os.path.dirname(os.path.abspath(filepath))
     global_path = os.path.expanduser("~/.c5/include")
     
-    new_ast, library_funcs, library_vars, lib_includes = _process_includes(
+    new_ast, library_funcs, library_vars, lib_includes, weak_symbols = _process_includes(
         ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
     )
     
@@ -491,7 +515,7 @@ def analyze_files(filepaths, include_paths=None, is_library=False):
     
     for filepath in filepaths:
         code = open(filepath).read()
-        all_code += f"\n// File: {filepath}\n" + code
+        all_code += f"\\n// File: {filepath}\\n" + code
         
         tokens = lex(code)
         parser = Parser(tokens)
@@ -503,7 +527,7 @@ def analyze_files(filepaths, include_paths=None, is_library=False):
         # If this is not the primary file, track its functions as library functions
         is_primary = (filepath == primary_file)
         
-        res_ast, res_funcs, res_vars, res_libs = _process_includes(
+        res_ast, res_funcs, res_vars, res_libs, res_weak = _process_includes(
             ast, dir_path, include_paths, global_path, processed_files, use_namespaces, os.path.abspath(filepath)
         )
         
