@@ -1,4 +1,5 @@
 // this won't be used, only if the str library is updated and needs to be recompiled.
+include <std.c5h>
 
 const unsigned int<1> isdigit(string s) {
     array<char> nums = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
@@ -157,4 +158,47 @@ array<string> split_s(string txt, string seps) {
     }
 
     return out;
+}
+
+string input() {
+    char out[256] = {0};
+    std::scanf(" %[^\n]", out);
+    string final = "";
+    for (int i = 0; i < 256; i++) {
+        if (out[i] == 0) {
+            break;
+        }
+        final = final + (string)out[i];
+    }
+    return final;
+}
+
+int i_input() {
+    char out[256] = {0};
+    std::scanf("%s", out);
+    string final = "";
+    for (int i = 0; i < 256; i++) {
+        if (out[i] == 0) {
+            break;
+        }
+        final = final + (string)out[i];
+    }
+
+    int final_i = (int)final;
+    return final_i;
+}
+
+float f_input() {
+    char out[256] = {0};
+    std::scanf("%s", out);
+    string final = "";
+    for (int i = 0; i < 256; i++) {
+        if (out[i] == 0) {
+            break;
+        }
+        final = final + (string)out[i];
+    }
+
+    float final_f = (float)final;
+    return final_f;
 }

@@ -17,3 +17,9 @@ const unsigned int<1> endswith(string str, string txt);
 array<string> split(string txt, char sep);
 
 array<string> split_s(string txt, string seps);
+
+string input();
+
+int i_input();
+
+float f_input();
