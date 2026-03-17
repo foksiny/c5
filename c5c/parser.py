@@ -382,6 +382,33 @@ class Parser:
                 self.consume('RBRACE')
         return ('if_stmt', cond, body, else_body, loc)
 
+    def parse_unless_stmt(self):
+        loc = self._loc()
+        self.consume('UNLESS')
+        self.consume('LPAREN')
+        cond = self.parse_expr()
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        body = []
+        while self.peek().type != 'RBRACE':
+            body.append(self.parse_stmt())
+        self.consume('RBRACE')
+        
+        else_body = None
+        if self.peek().type == 'ELSE':
+            self.consume('ELSE')
+            if self.peek().type == 'IF':
+                else_body = [self.parse_if_stmt()]
+            else:
+                self.consume('LBRACE')
+                else_body = []
+                while self.peek().type != 'RBRACE':
+                    else_body.append(self.parse_stmt())
+                self.consume('RBRACE')
+        # Return as 'unless_stmt' with condition negated using '!' operator
+        negated_cond = ('unary', '!', cond, loc)
+        return ('if_stmt', negated_cond, body, else_body, loc)
+
     def parse_while_stmt(self):
         loc = self._loc()
         self.consume('WHILE')
@@ -536,6 +563,8 @@ class Parser:
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
+        if self.peek().type == 'UNLESS':
+            return self.parse_unless_stmt()
         if self.peek().type == 'WITH':
             return self.parse_with_stmt()
         if self.peek().type == 'SWITCH':

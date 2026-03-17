@@ -3,10 +3,6 @@ import os
 import json
 import re
 
-# Redirect stdout to stderr
-original_stdout = sys.stdout
-sys.stdout = sys.stderr
-
 # Add C5 compiler to sys.path
 sys.path.append(os.path.expanduser("~/projects/c5"))
 
@@ -16,8 +12,19 @@ try:
     from c5c.analyzer import SemanticAnalyzer
     from c5c.compiler import _process_includes
     from c5c.main import parse_build_file
-except ImportError:
-    pass
+    _C5_AVAILABLE = True
+except ImportError as e:
+    # Log import error to stderr but continue - will handle gracefully later
+    sys.stderr.write(f"ERROR: Failed to import C5 compiler modules: {e}\n")
+    sys.stderr.write("Make sure the C5 compiler is installed at ~/projects/c5\n")
+    sys.stderr.flush()
+    # Set up fallback stubs to prevent crashes
+    lex = None
+    Parser = None
+    SemanticAnalyzer = object  # Use object as base class
+    _process_includes = None
+    parse_build_file = None
+    _C5_AVAILABLE = False
 
 def log(msg):
     sys.stderr.write(f"LOG: {msg}\n")
@@ -290,8 +297,8 @@ def send_notification(method, params):
 
 def _send(msg):
     encoded = json.dumps(msg)
-    original_stdout.write(f"Content-Length: {len(encoded)}\r\n\r\n{encoded}")
-    original_stdout.flush()
+    sys.stdout.write(f"Content-Length: {len(encoded)}\r\n\r\n{encoded}")
+    sys.stdout.flush()
 
 def find_project_root(current_path):
     dir_path = os.path.dirname(current_path)
@@ -303,6 +310,9 @@ def find_project_root(current_path):
 ANALYZER_CACHE = {}
 
 def get_analyzer(code, filename):
+    if not _C5_AVAILABLE:
+        # Return a minimal analyzer with no functionality
+        return None, None
     tokens = lex(code)
     parser = Parser(tokens)
     ast = parser.parse_program()
@@ -329,47 +339,95 @@ def encode_tokens(tokens):
     return encoded
 
 def main():
+    sys.stderr.write("C5 Language Server starting...\n")
+    sys.stderr.flush()
+    
+    # Check if modules are available
+    if lex is None or Parser is None:
+        sys.stderr.write("WARNING: C5 compiler modules not available. LSP will operate in limited mode.\n")
+        sys.stderr.write("Expected C5 compiler at ~/projects/c5\n")
+        sys.stderr.flush()
+    
     while True:
-        line = sys.stdin.readline()
-        if not line: break
-        if line.startswith("Content-Length:"):
-            try:
-                length = int(line.split(":")[1].strip())
-                sys.stdin.readline()
-                content = sys.stdin.read(length)
-                msg = json.loads(content)
-                method, params, msg_id = msg.get("method"), msg.get("params"), msg.get("id")
-                if method == "initialize":
-                    send_response(msg_id, {"capabilities": {"textDocumentSync": 1, "hoverProvider": True, "semanticTokensProvider": {"legend": {"tokenTypes": TOKEN_TYPES, "tokenModifiers": TOKEN_MODS}, "full": True}}})
-                elif method == "textDocument/hover":
-                    uri, pos = params["textDocument"]["uri"], params["position"]
-                    filename = uri.replace("file://", "")
-                    if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                    analyzer = ANALYZER_CACHE.get(filename)
-                    if analyzer:
-                        info = analyzer.symbols.get((pos["line"], pos["character"]))
-                        if info: send_response(msg_id, {"contents": {"kind": "markdown", "value": f"```c5\n{info}\n```"}})
-                        else: send_response(msg_id, None)
-                    else: send_response(msg_id, None)
-                elif method == "textDocument/semanticTokens/full":
-                    uri = params["textDocument"]["uri"]
-                    filename = uri.replace("file://", "")
-                    if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                    analyzer = ANALYZER_CACHE.get(filename)
-                    if not analyzer and os.path.exists(filename):
-                        with open(filename, 'r') as f: analyzer, _ = get_analyzer(f.read(), filename)
-                    if analyzer: send_response(msg_id, {"data": encode_tokens(analyzer.semantic_tokens)})
-                    else: send_response(msg_id, {"data": []})
-                elif method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"):
-                    doc = params["textDocument"]
-                    uri, text = doc["uri"], doc.get("text")
-                    if text is None and "contentChanges" in params: text = params["contentChanges"][0]["text"]
-                    if text is not None:
+        try:
+            line = sys.stdin.readline()
+            if not line: 
+                sys.stderr.write("End of input stream, exiting.\n")
+                sys.stderr.flush()
+                break
+                
+            if line.startswith("Content-Length:"):
+                try:
+                    length_str = line.split(":", 1)[1].strip()
+                    length = int(length_str)
+                    sys.stdin.readline()  # Read blank line
+                    content = sys.stdin.read(length)
+                    msg = json.loads(content)
+                    method, params, msg_id = msg.get("method"), msg.get("params"), msg.get("id")
+                    
+                    if method == "initialize":
+                        sys.stderr.write("Received initialize request\n")
+                        sys.stderr.flush()
+                        send_response(msg_id, {"capabilities": {"textDocumentSync": 1, "hoverProvider": True, "semanticTokensProvider": {"legend": {"tokenTypes": TOKEN_TYPES, "tokenModifiers": TOKEN_MODS}, "full": True}}})
+                    elif method == "textDocument/hover":
+                        uri, pos = params["textDocument"]["uri"], params["position"]
                         filename = uri.replace("file://", "")
                         if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                        analyzer, _ = get_analyzer(text, filename)
-                        send_notification("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": analyzer.lsp_diagnostics})
-            except Exception as e: log(f"Loop error: {str(e)}")
+                        if lex is None:
+                            send_response(msg_id, None)
+                        else:
+                            analyzer = ANALYZER_CACHE.get(filename)
+                            if analyzer:
+                                info = analyzer.symbols.get((pos["line"], pos["character"]))
+                                if info: send_response(msg_id, {"contents": {"kind": "markdown", "value": f"```c5\n{info}\n```"}})
+                                else: send_response(msg_id, None)
+                            else: send_response(msg_id, None)
+                    elif method == "textDocument/semanticTokens/full":
+                        uri = params["textDocument"]["uri"]
+                        filename = uri.replace("file://", "")
+                        if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
+                        if lex is None:
+                            send_response(msg_id, {"data": []})
+                        else:
+                            analyzer = ANALYZER_CACHE.get(filename)
+                            if not analyzer and os.path.exists(filename):
+                                try:
+                                    with open(filename, 'r', encoding='utf-8') as f: 
+                                        content = f.read()
+                                        if content:
+                                            analyzer, _ = get_analyzer(content, filename)
+                                except Exception as e:
+                                    sys.stderr.write(f"Error reading file {filename}: {e}\n")
+                                    sys.stderr.flush()
+                            if analyzer: 
+                                send_response(msg_id, {"data": encode_tokens(analyzer.semantic_tokens)})
+                            else: 
+                                send_response(msg_id, {"data": []})
+                    elif method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"):
+                        doc = params["textDocument"]
+                        uri, text = doc["uri"], doc.get("text")
+                        if text is None and "contentChanges" in params: 
+                            text = params["contentChanges"][0]["text"]
+                        if text is not None:
+                            filename = uri.replace("file://", "")
+                            if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
+                            if lex is not None:
+                                try:
+                                    analyzer, _ = get_analyzer(text, filename)
+                                    send_notification("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": analyzer.lsp_diagnostics})
+                                except Exception as e:
+                                    sys.stderr.write(f"Error analyzing document: {e}\n")
+                                    sys.stderr.flush()
+                                    send_notification("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
+                except json.JSONDecodeError as e:
+                    sys.stderr.write(f"JSON decode error: {e}\n")
+                    sys.stderr.flush()
+                except Exception as e:
+                    sys.stderr.write(f"Error processing message: {e}\n")
+                    sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"Outer loop error: {e}\n")
+            sys.stderr.flush()
 
 if __name__ == "__main__":
     main()

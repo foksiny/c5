@@ -29,7 +29,7 @@
              "patterns": [
                  {
                      "name": "keyword.control.c5",
-                     "match": "\\b(if|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch|forstruct)\\b"
+                     "match": "\\b(if|unless|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch|forstruct)\\b"
                  },
                  {
                      "name": "keyword.other.c5",

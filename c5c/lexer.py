@@ -21,6 +21,7 @@ def lex(code):
         ('NULL',      r'NULL\b'),
         ('RETURN',    r'return\b'),
         ('IF',        r'if\b'),
+        ('UNLESS',    r'unless\b'),
         ('ELSE',      r'else\b'),
         ('SWITCH',    r'switch\b'),
         ('CASE',      r'case\b'),

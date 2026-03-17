@@ -1,0 +1,17 @@
+include <std.c5h>
+
+void main() {
+    unless (10 == 10) {
+        // this will not execute, because unless only executes when it's false.
+        std::printf("true\n");
+    } else {
+        std::printf("false\n");
+    }
+
+    unless (10 != 10) {
+        // this will work, because unless detected false (10 != 10 = false = 0)
+        std::printf("true\n");
+    } else {
+        std::printf("false\n");
+    }
+}

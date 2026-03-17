@@ -742,6 +742,7 @@ const char NEWLINE = '\n';
 ### 8. Control Flow
 C5 supports standard C control structures:
 - `if` / `else`
+- `unless` (negated if)
 - `while` loops
 - `do` / `while` loops
 - `for` loops
@@ -754,6 +755,51 @@ for (int i = 0; i < 10; i = i + 1) {
     }
 }
 ```
+
+#### Unless Statement
+
+The `unless` statement is a syntactic sugar for `if (!condition)`. It executes the body when the condition is false, and optionally an `else` branch when the condition is true.
+
+**Syntax:**
+```c5
+unless (condition) {
+    // executes when condition is false (0)
+} else {
+    // executes when condition is true (non-zero)
+}
+```
+
+**Semantics:**
+- `unless (expr) { body }` is equivalent to `if (!expr) { body }`.
+- The `else` clause is supported.
+- `unless` can be chained: `unless (cond1) { ... } else unless (cond2) { ... } else { ... }`.
+
+**Examples:**
+
+```c5
+include <std.c5h>
+
+void main() {
+    int x = 10;
+    
+    unless (x == 20) {
+        std::printf("x is not 20\n");
+    } else {
+        std::printf("x is 20\n");
+    }
+    
+    // Chained unless/else
+    unless (x == 10) {
+        std::printf("not 10\n");
+    } else unless (x == 20) {
+        std::printf("10\n");
+    } else {
+        std::printf("other\n");
+    }
+}
+```
+
+The `unless` statement improves readability for negative conditions, making the code more expressive.
 
 #### Foreach Loops
 The `foreach` loop provides a convenient way to iterate over arrays with both index and value:

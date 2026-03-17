@@ -104,7 +104,7 @@ class Optimizer:
                         if op == '-': return ('number', str(-val)) + ast[3:]
                         if op == '+': return target
                         if op == '~': return ('number', str(~val)) + ast[3:]
-                        if op == '!': return ('number', '1' if val != 0 else '0') + ast[3:]
+                        if op == '!': return ('number', '1' if val == 0 else '0') + ast[3:]
                     except: pass
                 
                 return ('unary', op, target) + ast[3:]

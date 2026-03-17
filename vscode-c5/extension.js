@@ -17,20 +17,40 @@ function findProjectRoot(filePath) {
 }
 
 function activate(context) {
+    console.log('C5 extension activating...');
+    
     // 1. Language Server Setup
     let serverModule = path.join(context.extensionPath, 'server', 'server.py');
+    console.log('Starting C5 Language Server:', serverModule);
+    
     let serverOptions = {
         command: 'python3',
         args: [serverModule]
     };
     let clientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'c5' }],
+        documentSelector: [{ scheme: 'file', language: 'c5' }, { scheme: 'file', language: 'c5h' }],
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.c5')
-        }
+        },
+        traceOutputChannel: vscode.window.createOutputChannel('C5 Language Server')
     };
-    client = new LanguageClient('c5LanguageServer', 'C5 Language Server', serverOptions, clientOptions);
-    client.start();
+    
+    try {
+        client = new LanguageClient('c5LanguageServer', 'C5 Language Server', serverOptions, clientOptions);
+        client.start();
+        console.log('C5 Language Server started successfully');
+        
+        // Listen for errors
+        client.onDidChangeState(e => {
+            console.log('LSP state changed:', e.newState);
+            if (e.newState === 4) { // Stopped
+                console.error('LSP server stopped unexpectedly');
+            }
+        });
+    } catch (error) {
+        console.error('Failed to start C5 Language Server:', error);
+        vscode.window.showErrorMessage(`C5 Language Server failed to start: ${error.message}`);
+    }
 
     // 2. Build Command Implementation
     let buildCommand = vscode.commands.registerCommand('c5.buildProject', () => {

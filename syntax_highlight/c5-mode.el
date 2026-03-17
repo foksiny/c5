@@ -26,7 +26,7 @@
 
 (defvar c5-keywords
   '("include" "libinclude" "let" "const" "macro" "type" "fnct"
-    "if" "else" "switch" "case" "default" "with" "as"
+    "if" "else" "unless" "switch" "case" "default" "with" "as"
     "while" "do" "for" "foreach" "in" "break" "syscall"
     "return" "try" "catch" "struct" "enum" "signed" "unsigned"
     "forstruct")
