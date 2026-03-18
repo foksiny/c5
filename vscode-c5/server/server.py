@@ -1,433 +1,532 @@
+#!/usr/bin/env python3
+"""
+C5 Language Server
+Provides LSP features: hover, diagnostics, and more.
+"""
+
 import sys
 import os
 import json
 import re
+from pathlib import Path
 
-# Add C5 compiler to sys.path
-sys.path.append(os.path.expanduser("~/projects/c5"))
+# Pattern to strip ANSI escape sequences
+ANSI_ESCAPE_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+# Try to import pygls
+try:
+    from pygls.lsp.server import LanguageServer, types
+    PYGLS_AVAILABLE = True
+except ImportError:
+    PYGLS_AVAILABLE = False
+    print("Warning: pygls not installed. Install with: pip install pygls", file=sys.stderr)
+
+# Add the C5 compiler directory to Python path
+# Default location: ~/projects/c5
+# If your compiler is elsewhere, modify this path.
+project_root = Path.home() / "projects" / "c5"
+if not project_root.exists():
+    # Fallback: try relative to extension (for development)
+    project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 try:
     from c5c.lexer import lex
     from c5c.parser import Parser
     from c5c.analyzer import SemanticAnalyzer
-    from c5c.compiler import _process_includes
-    from c5c.main import parse_build_file
-    _C5_AVAILABLE = True
+    from c5c.compiler import _collect_macros, _expand_macros
+    C5_AVAILABLE = True
 except ImportError as e:
-    # Log import error to stderr but continue - will handle gracefully later
-    sys.stderr.write(f"ERROR: Failed to import C5 compiler modules: {e}\n")
-    sys.stderr.write("Make sure the C5 compiler is installed at ~/projects/c5\n")
-    sys.stderr.flush()
-    # Set up fallback stubs to prevent crashes
-    lex = None
-    Parser = None
-    SemanticAnalyzer = object  # Use object as base class
-    _process_includes = None
-    parse_build_file = None
-    _C5_AVAILABLE = False
+    C5_AVAILABLE = False
+    print(f"Warning: Could not import C5 compiler modules: {e}", file=sys.stderr)
 
-def log(msg):
-    sys.stderr.write(f"LOG: {msg}\n")
-    sys.stderr.flush()
 
-# Legend for semantic tokens
-TOKEN_TYPES = ["type", "struct", "enum", "function", "namespace"]
-TOKEN_MODS = []
+class C5LanguageServer(LanguageServer):
+    """C5 Language Server implementation."""
 
-class LSPAnalyzer(SemanticAnalyzer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.lsp_diagnostics = []
-        self.semantic_tokens = []
-        self.symbols = {} # (line, col) -> info string
-        self.func_signatures = {} # name -> (ret_ty, params)
-        self.symbol_types = {}
-        self.macros = {} # name -> params
-    
-    def add_error(self, code, msg=None, loc=None):
-        m, _ = self.error_db.get(code, ("Error", "-"))
-        if msg: m += f" [{msg}]"
-        line, col = loc if loc else (1, 0)
-        self.lsp_diagnostics.append({
-            "range": {
-                "start": {"line": max(0, line - 1), "character": col},
-                "end": {"line": max(0, line - 1), "character": col + 5}
-            },
-            "message": f"{code}: {m}",
-            "severity": 1
-        })
-        self.errors.append(m)
+    def __init__(self):
+        super().__init__('c5-language-server', '0.1')
+        self.documents = {}  # uri -> content
+        self.analysis_cache = {}  # uri -> (ast, analyzer, diagnostics)
 
-    def add_warning(self, code, msg=None, loc=None):
-        m, _ = self.warning_db.get(code, ("Warning", "-"))
-        if msg: m += f" [{msg}]"
-        line, col = loc if loc else (1, 0)
-        self.lsp_diagnostics.append({
-            "range": {
-                "start": {"line": max(0, line - 1), "character": col},
-                "end": {"line": max(0, line - 1), "character": col + 5}
-            },
-            "message": f"{code}: {m}",
-            "severity": 2
-        })
-        self.warnings.append(m)
+        # Register handlers
+        @self.feature('initialize')
+        def initialize(ls, params):
+            return {
+                'capabilities': {
+                    'textDocumentSync': {
+                        'openClose': True,
+                        'change': 1  # TextDocumentSyncKind.Full
+                    },
+                    'hoverProvider': True,
+                    'diagnosticProvider': {
+                        'interFileDependencies': False,
+                        'workspaceDiagnostics': False
+                    }
+                }
+            }
 
-    def _analyze_node(self, node):
-        if not isinstance(node, tuple): return
-        tag = node[0]
-        if tag == 'var_decl':
-            self.symbol_types[node[2]] = node[1]
-        elif tag == 'foreach':
-            self.symbol_types[node[1]] = 'int'
-        elif tag == 'forstruct':
-            # forstruct (field, name in struct) { ... }
-            # node[1] = field variable name, node[2] = name variable name, node[3] = struct expression
-            self.symbol_types[node[1]] = 'any'  # field can be any type
-            self.symbol_types[node[2]] = 'string'  # name is always a string
-        elif tag == 'try_catch_stmt':
-            self.symbol_types[node[2]] = 'string'
-        elif tag == 'call':
-            # Check if it's a macro call to avoid E005: Function not declared
-            func_node = node[1]
-            if isinstance(func_node, tuple) and func_node[0] == 'id':
-                name = func_node[1]
-                if name in self.macros:
-                    # It's a macro, just analyze arguments
-                    for arg in node[2]:
-                        self._analyze_node(arg)
-                    return
-                # Handle built-in functions like gettype
-                elif name == 'gettype':
-                    # gettype returns a type from c5core::types enum
-                    # Just analyze arguments, no special handling needed
-                    for arg in node[2]:
-                        self._analyze_node(arg)
-                    return
-            elif isinstance(func_node, tuple) and func_node[0] == 'namespace_access':
-                # Handle namespaced macros if any
-                base = func_node[1]
-                name = func_node[2]
-                if isinstance(base, str):
-                    full_name = f"{base}::{name}"
-                    if full_name in self.macros:
-                        for arg in node[2]:
-                            self._analyze_node(arg)
-                        return
-        super()._analyze_node(node)
+        @self.feature('textDocument/didOpen')
+        def did_open(ls, params):
+            uri = params.text_document.uri
+            text = params.text_document.text
+            self.documents[uri] = text
+            self._analyze_document(uri, text)
 
-    def analyze(self, ast, require_main=True, show_warnings=True):
-        self.show_warnings = show_warnings
-        self._record_signatures(ast)
-        self._scan_declarations(ast)
-        for name, ty in self.scopes[0].items():
-            self.symbol_types[name] = ty
+        @self.feature('textDocument/didChange')
+        def did_change(ls, params):
+            uri = params.text_document.uri
+            # Full sync - replace entire content
+            # content_changes is always present in LSP
+            for change in params.content_changes:
+                if change.range is None:  # Full text update
+                    self.documents[uri] = change.text
+                    break
+            self._analyze_document(uri, self.documents.get(uri, ""))
+
+        @self.feature('textDocument/didSave')
+        def did_save(ls, params):
+            uri = params.text_document.uri
+            if uri in self.documents:
+                self._analyze_document(uri, self.documents[uri])
+
+        @self.feature('textDocument/hover')
+        def hover(ls, params):
+            uri = params.text_document.uri
+            position = params.position
+
+            if uri not in self.analysis_cache:
+                return None
+
+            analyzer = self.analysis_cache[uri]['analyzer']
+            text = self.documents.get(uri, "")
+
+            # Find the symbol at the given position
+            symbol_info = self._find_symbol_at_position(analyzer, text, position)
+
+            if symbol_info:
+                return types.Hover(contents=symbol_info)
+
+            return None
+
+        @self.feature('workspace/didChangeWatchedFiles')
+        def did_change_watched_files(ls, params):
+            """Handle file system changes for watched files (e.g., includes)."""
+            for change in params.changes:
+                uri = change.uri
+                # If a changed file is in our analysis cache, re-analyze dependent files
+                # For simplicity, we clear the cache and re-analyze open documents
+                if uri in self.analysis_cache:
+                    # Invalidate this file and any files that include it
+                    # For now, just re-analyze the main file when it changes
+                    if uri in self.documents:
+                        self._analyze_document(uri, self.documents[uri])
+            return None
+
+    def _resolve_include_path(self, fname, base_dir):
+        """Resolve an include filename to an absolute path."""
+        search_paths = [
+            base_dir,
+            os.path.join(base_dir, '..', 'c5include'),
+            os.path.join(os.getcwd(), 'c5include'),
+            os.path.join(str(project_root), 'c5include')
+        ]
+        for p in search_paths:
+            fullpath = os.path.normpath(os.path.join(p, fname))
+            if os.path.isfile(fullpath):
+                return os.path.abspath(fullpath)
+        return None
+
+    def _collect_include_uris_from_ast(self, ast, base_dir, include_uris, visited):
+        """Recursively collect include URIs from the AST."""
         for node in ast:
-            self._analyze_node(node)
-            self._collect_tokens_and_symbols(node)
-        if require_main and 'main' not in self.functions:
-            self.add_error("E009")
-        return self.errors, self.warnings
+            if isinstance(node, tuple) and node[0] == 'include':
+                fname = node[1]
+                inc_path = self._resolve_include_path(fname, base_dir)
+                if inc_path:
+                    inc_uri = Path(inc_path).as_uri()
+                    if inc_uri not in visited:
+                        visited.add(inc_uri)
+                        include_uris.append(inc_uri)
 
-    def _record_signatures(self, ast):
-        if not isinstance(ast, list): return
+    def _merge_analyzer_symbols(self, dest, src, namespace=None):
+        """Merge symbols from src analyzer into dest analyzer, optionally applying a namespace prefix."""
+        prefix = f"{namespace}::" if namespace else ""
+        # Merge functions
+        for name, info in src.functions.items():
+            new_name = prefix + name
+            if new_name not in dest.functions:
+                dest.functions[new_name] = info
+        # Merge structs
+        for name, fields in src.structs.items():
+            new_name = prefix + name
+            if new_name not in dest.structs:
+                dest.structs[new_name] = fields
+        # Merge enums
+        for name, values in src.enums.items():
+            new_name = prefix + name
+            if new_name not in dest.enums:
+                dest.enums[new_name] = values
+        # Merge types
+        for name, types in src.types.items():
+            new_name = prefix + name
+            if new_name not in dest.types:
+                dest.types[new_name] = types
+        # Merge typeops
+        for type_name, ops in src.typeops.items():
+            new_type_name = prefix + type_name
+            if new_type_name not in dest.typeops:
+                dest.typeops[new_type_name] = {}
+            for op, info in ops.items():
+                if op not in dest.typeops[new_type_name]:
+                    dest.typeops[new_type_name][op] = info
+        # Merge global variables (scope 0)
+        for var_name, var_type in src.scopes[0].items():
+            new_var_name = prefix + var_name
+            if new_var_name not in dest.scopes[0]:
+                dest.scopes[0][new_var_name] = var_type
+        # Merge library symbols: add all merged symbol names to library sets
+        # This ensures symbols from includes are treated as library (no dead code warnings)
+        dest.library_funcs.update([prefix + name for name in src.functions.keys()])
+        dest.library_vars.update([prefix + name for name in src.scopes[0].keys()])
+
+    def _collect_macros_from_ast(self, ast, macros_dict):
+        """Collect all macro definitions from an AST and add them to macros_dict."""
         for node in ast:
-            if isinstance(node, tuple):
-                if node[0] in ('func', 'extern'):
-                    self.func_signatures[node[2]] = (node[1], node[3])
-                    for pty, pname in node[3]:
-                        # Handle 'any' type - it's a special type that can only be used in function arguments
-                        if pty == 'any':
-                            self.symbol_types[pname] = 'any'
-                        else:
-                            self.symbol_types[pname] = pty
-                elif node[0] == 'macro':
-                    self.macros[node[1]] = node[2]
+            if isinstance(node, tuple) and node[0] == 'macro':
+                _, name, params, body, _ = node
+                macros_dict[name] = (params, body)
 
-    def _collect_tokens_and_symbols(self, node):
-        if not isinstance(node, tuple):
-            if isinstance(node, list):
-                for n in node: self._collect_tokens_and_symbols(n)
+    def _analyze_document(self, uri, text, _visited=None):
+        """Analyze a C5 document and produce diagnostics."""
+        if not C5_AVAILABLE:
             return
-        tag = node[0]
-        loc = self._get_loc(node)
-        line, col = loc[0]-1, loc[1]
 
-        if tag == 'id':
-            self._process_symbol(node[1], line, col, len(node[1]))
-        elif tag == 'namespace_access':
-            # node: ('namespace_access', base, name, loc)
-            base = node[1]
-            name = node[2]
-            if isinstance(base, str):
-                full_name = f"{base}::{name}"
-                self.semantic_tokens.append((line, col, len(base), 4)) # namespace index
-                actual_col = col + len(base) + 2
-                self._process_symbol(full_name, line, actual_col, len(name), base_col=col, base_len=len(base))
-            elif isinstance(base, tuple):
-                # Handle nested namespace access if any
-                pass
-        elif tag == 'func':
-            ret, name, params = node[1], node[2], node[3]
-            param_str = ", ".join([f"{pty} {pname}" for pty, pname in params])
-            info = f"{ret} {name}({param_str})"
-            self._apply_info_to_source(name, line, col, info, 3)
-        elif tag == 'macro':
-            name, params = node[1], node[2]
-            param_str = ", ".join(params)
-            info = f"macro {name}({param_str})"
-            self._apply_info_to_source(name, line, col, info, 3)
-        elif tag == 'struct_decl':
-            name, fields = node[1], node[2]
-            field_str = "\n".join([f"    {fty} {fname};" for fty, fname in fields])
-            info = f"struct {name} {{\n{field_str}\n}};"
-            self._apply_info_to_source(name, line, col, info, 1)
-        elif tag == 'enum_decl':
-            name, variants = node[1], node[2]
-            variant_str = ", ".join(variants)
-            info = f"enum {name} {{ {variant_str} }};"
-            self._apply_info_to_source(name, line, col, info, 2)
-        elif tag == 'type_decl':
-            name, types = node[1], node[2]
-            type_str = ", ".join(types)
-            info = f"type {name} {{ {type_str} }};"
-            self._apply_info_to_source(name, line, col, info, 0)
-        elif tag in ('var_decl', 'pub_var'):
-            ty, name = node[1], node[2]
-            info = f"{ty} {name}"
-            self._apply_info_to_source(name, line, col, info)
-        elif tag == 'forstruct':
-            # forstruct (field, name in struct) { ... }
-            # node[1] = field variable name, node[2] = name variable name, node[3] = struct expression
-            field_name = node[1]
-            name_var = node[2]
-            # Add semantic tokens for the loop variables
-            self.semantic_tokens.append((line, col, len(field_name), 0))  # type token for field
-            self.semantic_tokens.append((line, col + len(field_name) + 2, len(name_var), 0))  # type token for name
-            # Process the struct expression
-            self._collect_tokens_and_symbols(node[3])
-            # Process the loop body
-            self._collect_tokens_and_symbols(node[4])
-        elif tag == 'call':
-            # Handle gettype function specially
-            func_node = node[1]
-            if isinstance(func_node, tuple) and func_node[0] == 'id' and func_node[1] == 'gettype':
-                # gettype is a built-in function, add semantic token
-                self.semantic_tokens.append((line, col, len('gettype'), 3))  # function token
-                # Process arguments
-                for arg in node[2]:
-                    self._collect_tokens_and_symbols(arg)
-                return
+        if _visited is None:
+            _visited = set()
 
-        for child in node:
-            if isinstance(child, (tuple, list)):
-                self._collect_tokens_and_symbols(child)
+        filepath = uri_to_path(uri)
+        base_dir = os.path.dirname(filepath)
 
-    def _apply_info_to_source(self, name, line, col, info, t_idx=None):
-        source_line = self.source_lines[line] if line < len(self.source_lines) else ""
-        # Search for the name starting from col
-        # Use a regex that only matches the name as a whole word
-        match = re.search(r'\b' + re.escape(name.split('::')[-1]) + r'\b', source_line[col:])
+        diagnostics = []
+        try:
+            # Parse AST
+            tokens = lex(text)
+            parser = Parser(tokens)
+            ast = parser.parse_program()
+
+            # Create analyzer early for error reporting
+            analyzer = SemanticAnalyzer(source_code=text, filename=filepath)
+
+            # Collect include URIs (direct)
+            include_uris = []
+            self._collect_include_uris_from_ast(ast, base_dir, include_uris, _visited)
+
+            # Analyze included files recursively
+            for inc_uri in include_uris:
+                if inc_uri in self.analysis_cache:
+                    continue
+                inc_path = uri_to_path(inc_uri)
+                try:
+                    with open(inc_path, 'r') as f:
+                        inc_text = f.read()
+                    # Recursively analyze this include with the same visited set
+                    self._analyze_document(inc_uri, inc_text, _visited)
+                except Exception as e:
+                    analyzer.add_error("E999", f"Failed to read include: {e}", loc=None)
+
+            # After includes are analyzed, merge their symbols into the main analyzer
+            for inc_uri in include_uris:
+                if inc_uri in self.analysis_cache:
+                    inc_analyzer = self.analysis_cache[inc_uri]['analyzer']
+                    # Determine namespace from the included file's name (e.g., std from std.c5h)
+                    inc_path = uri_to_path(inc_uri)
+                    inc_namespace = os.path.splitext(os.path.basename(inc_path))[0]
+                    self._merge_analyzer_symbols(analyzer, inc_analyzer, namespace=inc_namespace)
+
+            # Collect and expand macros (like the compiler does)
+            # First, collect macros from the main AST and all included ASTs
+            macros = {}
+            # Add macros from main file
+            self._collect_macros_from_ast(ast, macros)
+            # Add macros from included files (they are already in the cache)
+            for inc_uri in include_uris:
+                if inc_uri in self.analysis_cache:
+                    inc_ast = self.analysis_cache[inc_uri]['ast']
+                    inc_path = uri_to_path(inc_uri)
+                    inc_namespace = os.path.splitext(os.path.basename(inc_path))[0]
+                    # Collect macros with namespacing
+                    inc_macros = {}
+                    self._collect_macros_from_ast(inc_ast, inc_macros)
+                    # Namespace the macro names
+                    for macro_name in list(inc_macros.keys()):
+                        namespaced_name = f"{inc_namespace}::{macro_name}"
+                        macros[namespaced_name] = inc_macros[macro_name]
+
+            # Expand macros in the main AST
+            expanded_ast = _expand_macros(ast, macros)
+
+            # Strip include, detect_once, and macro definitions from AST before analysis
+            cleaned_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] in ('include', 'libinclude', 'detect_once', 'macro'))]
+
+            # Analyze the cleaned AST with merged symbols
+            analyzer.analyze(cleaned_ast, require_main=False, exit_on_error=False)
+
+            # Convert errors to LSP diagnostics
+            for error in analyzer.errors:
+                diag = self._parse_error_to_diagnostic(error)
+                if diag:
+                    diagnostics.append(diag)
+
+            for warning in analyzer.warnings:
+                diag = self._parse_warning_to_diagnostic(warning)
+                if diag:
+                    diagnostics.append(diag)
+
+            # Cache analysis results for hover
+            self.analysis_cache[uri] = {
+                'ast': ast,
+                'analyzer': analyzer,
+                'diagnostics': diagnostics
+            }
+
+        except Exception as e:
+            # Parse or analysis error - create a diagnostic
+            diagnostics.append(types.Diagnostic(
+                range=types.Range(
+                    start=types.Position(line=0, character=0),
+                    end=types.Position(line=0, character=1)
+                ),
+                severity=types.DiagnosticSeverity.Error,
+                code="PARSE_ERROR",
+                message=str(e)
+            ))
+
+        # Publish diagnostics
+        self.text_document_publish_diagnostics(types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics))
+
+    def _strip_ansi(self, s):
+        """Remove ANSI escape sequences from a string."""
+        return ANSI_ESCAPE_RE.sub('', s)
+
+    def _parse_diagnostic(self, diag_str, is_error=True):
+        """Parse an error or warning string into an LSP diagnostic."""
+        # Strip ANSI codes
+        clean = self._strip_ansi(diag_str)
+        # Take only the first line to avoid multi-line issues
+        first_line = clean.split('\n')[0]
+        # Pattern: filename:line:col: (error|warning): message
+        # Use regex to handle possible colons in filename
+        pattern = r'^(.+):(\d+):(\d+):\s*(?:error|warning)\s*:\s*(.*)$'
+        match = re.match(pattern, first_line)
         if match:
-            actual_col = col + match.start()
-            if t_idx is not None: self.semantic_tokens.append((line, actual_col, len(name), t_idx))
-            for i in range(len(name)): self.symbols[(line, actual_col + i)] = info
+            filename, line_str, col_str, message = match.groups()
+            try:
+                line = int(line_str) - 1
+                col = int(col_str)
+                severity = types.DiagnosticSeverity.Error if is_error else types.DiagnosticSeverity.Warning
+                code = "C5_ERROR" if is_error else "C5_WARNING"
+                return types.Diagnostic(
+                    range=types.Range(
+                        start=types.Position(line=line, character=col),
+                        end=types.Position(line=line, character=col + 10)
+                    ),
+                    severity=severity,
+                    code=code,
+                    message=message,
+                    source="C5 Language Server"
+                )
+            except ValueError:
+                pass
+        # Fallback: create diagnostic at line 0 with full cleaned message
+        severity = types.DiagnosticSeverity.Error if is_error else types.DiagnosticSeverity.Warning
+        code = "C5_ERROR" if is_error else "C5_WARNING"
+        return types.Diagnostic(
+            range=types.Range(
+                start=types.Position(line=0, character=0),
+                end=types.Position(line=0, character=10)
+            ),
+            severity=severity,
+            code=code,
+            message=clean,
+            source="C5 Language Server"
+        )
 
-    def _process_symbol(self, full_name, line, col, length, base_col=None, base_len=0):
-        t_idx, info = -1, None
-        
-        # Check for user-defined types (including namespaced ones)
-        if full_name in self.structs:
-            t_idx, fields = 1, self.structs[full_name]
-            field_str = "\n".join([f"    {fty} {fname};" for fty, fname in fields])
-            info = f"struct {full_name} {{\n{field_str}\n}};"
-        elif full_name in self.enums:
-            t_idx, variants = 2, self.enums[full_name]
-            info = f"enum {full_name} {{ {', '.join(variants)} }};"
-        elif full_name in self.types:
-            t_idx, types = 0, self.types[full_name]
-            info = f"type {full_name} {{ {', '.join(types)} }};"
-        elif full_name in self.func_signatures:
-            t_idx, (ret, params) = 3, self.func_signatures[full_name]
-            param_str = ", ".join([f"{pty} {pname}" for pty, pname in params])
-            info = f"{ret} {full_name}({param_str})"
-        elif full_name in self.macros:
-            t_idx, params = 3, self.macros[full_name]
-            param_str = ", ".join(params)
-            info = f"macro {full_name}({param_str})"
-        elif full_name in self.symbol_types:
-            info = f"{self.symbol_types[full_name]} {full_name}"
-        
-        # Check for enum variants (e.g., Enum::Variant)
-        if not info and '::' in full_name:
-            base, member = full_name.rsplit('::', 1)
-            if base in self.enums and member in self.enums[base]:
-                info = f"enum variant {full_name}"
-        
-        # Handle c5core namespace and its members
-        if not info and full_name.startswith('c5core::'):
-            parts = full_name.split('::')
-            if len(parts) == 2:
-                # c5core::types or c5core::ptrtypes
-                if parts[1] in ('types', 'ptrtypes'):
-                    t_idx = 4  # namespace token
-                    info = f"namespace {full_name}"
-            elif len(parts) == 3:
-                # c5core::types::INT, c5core::types::STRING, etc.
-                if parts[1] == 'types':
-                    # These are type constants from the c5core::types enum
-                    t_idx = 2  # enum token
-                    info = f"enum variant {full_name}"
-                elif parts[1] == 'ptrtypes':
-                    # These are pointer type constants from the c5core::ptrtypes enum
-                    t_idx = 2  # enum token
-                    info = f"enum variant {full_name}"
-        
-        if t_idx != -1: self.semantic_tokens.append((line, col, length, t_idx))
-        if info:
-            for i in range(length): self.symbols[(line, col + i)] = info
-            if base_col is not None:
-                # Set symbols for the namespace part as well
-                for i in range(base_len + 2): self.symbols[(line, base_col + i)] = info
+    def _parse_error_to_diagnostic(self, error_str):
+        """Parse an error string from the analyzer into an LSP diagnostic."""
+        return self._parse_diagnostic(error_str, True)
 
-def send_response(id, result):
-    _send({"jsonrpc": "2.0", "id": id, "result": result})
+    def _parse_warning_to_diagnostic(self, warning_str):
+        """Parse a warning string from the analyzer into an LSP diagnostic."""
+        return self._parse_diagnostic(warning_str, False)
 
-def send_notification(method, params):
-    _send({"jsonrpc": "2.0", "method": method, "params": params})
+    def _find_symbol_at_position(self, analyzer, text, position):
+        """Find symbol information at the given position."""
+        lines = text.split('\n')
+        if position.line >= len(lines):
+            return None
 
-def _send(msg):
-    encoded = json.dumps(msg)
-    sys.stdout.write(f"Content-Length: {len(encoded)}\r\n\r\n{encoded}")
-    sys.stdout.flush()
+        line = lines[position.line]
+        col = position.character
 
-def find_project_root(current_path):
-    dir_path = os.path.dirname(current_path)
-    while dir_path and dir_path != "/":
-        if os.path.exists(os.path.join(dir_path, "build.c5b")): return dir_path
-        dir_path = os.path.dirname(dir_path)
-    return os.path.dirname(current_path)
+        # Extract the qualified name at the cursor
+        word = self._extract_qualified_name(line, col)
+        if not word:
+            return None
 
-ANALYZER_CACHE = {}
+        # Check if we're looking at a typeop operator pattern
+        typeop_match = self._extract_typeop_at_position(line, col)
+        if typeop_match:
+            type_name, op = typeop_match
+            if type_name in analyzer.typeops and op in analyzer.typeops[type_name]:
+                ret_ty, params, body, loc = analyzer.typeops[type_name][op]
+                param_str = ', '.join([f"{p[0]} {p[1]}" for p in params])
+                return f"**typeop** `{type_name}::{op}`\n\nReturn type: `{ret_ty}`\n\nParameters: `{param_str}`"
 
-def get_analyzer(code, filename):
-    if not _C5_AVAILABLE:
-        # Return a minimal analyzer with no functionality
-        return None, None
-    tokens = lex(code)
-    parser = Parser(tokens)
-    ast = parser.parse_program()
-    dir_path = os.path.dirname(os.path.abspath(filename))
-    root_path = find_project_root(filename)
-    global_path = os.path.expanduser("~/.c5/include")
-    new_ast, lib_funcs, lib_vars, _ = _process_includes(
-        ast, dir_path, [], global_path, current_file_path=os.path.abspath(filename)
-    )
-    analyzer = LSPAnalyzer(source_code=code, filename=filename)
-    analyzer.library_funcs, analyzer.library_vars = lib_funcs, lib_vars
-    analyzer.analyze(new_ast, require_main=False)
-    ANALYZER_CACHE[filename] = analyzer
-    return analyzer, new_ast
+        # Check if the word is a type that has typeops (show type info)
+        if word in analyzer.typeops:
+            ops_list = ', '.join(analyzer.typeops[word].keys())
+            if word in analyzer.structs:
+                fields = analyzer.structs[word]
+                field_list = '\n'.join([f"- {f[0]} {f[1]}" for f in fields])
+                return f"**struct** `{word}`\n\nFields:\n{field_list}\n\nType operators: {ops_list}"
+            elif word in analyzer.types:
+                types = analyzer.types[word]
+                type_list = ', '.join(types)
+                return f"**type** `{word}`\n\nAllowed types: `{type_list}`\n\nType operators: {ops_list}"
+            else:
+                return f"**type** `{word}`\n\nType operators: `{ops_list}`"
 
-def encode_tokens(tokens):
-    tokens.sort()
-    encoded, last_line, last_char = [], 0, 0
-    for line, char, length, t_idx in tokens:
-        line_delta = line - last_line
-        char_delta = char if line_delta > 0 else char - last_char
-        encoded.extend([line_delta, char_delta, length, t_idx, 0])
-        last_line, last_char = line, char
-    return encoded
+        # Check functions
+        if word in analyzer.functions:
+            ret_ty, param_count, is_varargs, is_extern = analyzer.functions[word]
+            param_str = f"{param_count} argument{'s' if param_count != 1 else ''}"
+            if is_varargs:
+                param_str += ", ..."
+            return f"**function** `{word}`\n\nReturn type: `{ret_ty}`\n\nParameters: {param_str}\n\n{'extern' if is_extern else ''}"
+
+        # Check structs
+        if word in analyzer.structs:
+            fields = analyzer.structs[word]
+            field_list = '\n'.join([f"- {f[0]} {f[1]}" for f in fields])
+            return f"**struct** `{word}`\n\nFields:\n{field_list}"
+
+        # Check enums
+        if word in analyzer.enums:
+            values = analyzer.enums[word]
+            # values can be either a dict (name->value) or a list of names
+            if isinstance(values, dict):
+                value_list = '\n'.join([f"- {k} = {v}" for k, v in values.items()])
+            else:
+                value_list = '\n'.join([f"- {v}" for v in values])
+            return f"**enum** `{word}`\n\nValues:\n{value_list}"
+
+        # Check type definitions (union/variant)
+        if word in analyzer.types:
+            types = analyzer.types[word]
+            type_list = ', '.join(types)
+            return f"**type** `{word}`\n\nAllowed types: `{type_list}`"
+
+        # Check variables in current scope (global and any remaining)
+        for scope in analyzer.scopes:
+            for name, var_type in scope.items():
+                if word == name:
+                    return f"**variable** `{name}`\n\nType: `{var_type}`"
+
+        # Check other variables (e.g., local variables that have been popped from scopes)
+        if hasattr(analyzer, 'var_types') and word in analyzer.var_types:
+            return f"**variable** `{word}`\n\nType: `{analyzer.var_types[word]}`"
+
+        return None
+
+    def _extract_qualified_name(self, line: str, col: int) -> str:
+        """Extract the qualified identifier (with ::) at the given column."""
+        if col >= len(line):
+            return ""
+        if not (line[col].isalnum() or line[col] == '_'):
+            return ""
+        # Find end of simple identifier (alphanumeric + underscore)
+        end = col
+        while end < len(line) and (line[end].isalnum() or line[end] == '_'):
+            end += 1
+        # Find start of simple identifier
+        start = col
+        while start > 0 and (line[start-1].isalnum() or line[start-1] == '_'):
+            start -= 1
+        full_name = line[start:end]
+        # Prepend any namespace qualifiers
+        pos = start
+        while pos > 0:
+            if pos >= 2 and line[pos-2:pos] == '::':
+                ns_end = pos - 2
+                ns_start = ns_end
+                while ns_start > 0 and (line[ns_start-1].isalnum() or line[ns_start-1] == '_'):
+                    ns_start -= 1
+                if ns_start < ns_end:
+                    namespace = line[ns_start:ns_end]
+                    if namespace:
+                        full_name = namespace + '::' + full_name
+                        pos = ns_start
+                        continue
+            break
+        return full_name
+
+    def _extract_typeop_at_position(self, line: str, col: int) -> tuple:
+        """Check if position is on a typeop operator pattern."""
+        import re
+        # Pattern: typeop TypeName.operator or typeop TypeName == etc.
+        # We want to extract TypeName and the operator
+        # Look behind for "typeop" and TypeName
+        # This is tricky - we'll look at the line and try to match
+
+        # Simplified: look for pattern like "typeop BetterString.join" or "typeop BetterString =="
+        pattern = r'typeop\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)|([=!<>]=|&&|\|\||<<|>>|->|\.\.\.|[+\-*/%&|^~=<>!]))'
+        for match in re.finditer(pattern, line):
+            if match.start(1) <= col <= match.end(2) or match.start(2) <= col <= match.end(2):
+                type_name = match.group(1)
+                op = match.group(2) if match.group(2) else match.group(3)
+                return (type_name, op)
+        return None
+
+    def _symbol_contains_position(self, name: str, loc: tuple, word: str, pos: tuple) -> bool:
+        """Check if a symbol at location matches the word and position."""
+        line, col = loc
+        # loc is 1-based, pos[0] is 0-based
+        return word == name and pos[0] == (line - 1)
+
+    def start(self):
+        """Start the language server."""
+        self.start_io()
+
+    def stop(self):
+        """Stop the language server."""
+        super().stop()
+
+
+def uri_to_path(uri: str) -> str:
+    """Convert a file:// URI to a filesystem path."""
+    if uri.startswith('file://'):
+        path = uri[7:]
+        # Decode URL encoding
+        import urllib.parse
+        path = urllib.parse.unquote(path)
+        return path
+    return uri
+
 
 def main():
-    sys.stderr.write("C5 Language Server starting...\n")
-    sys.stderr.flush()
-    
-    # Check if modules are available
-    if lex is None or Parser is None:
-        sys.stderr.write("WARNING: C5 compiler modules not available. LSP will operate in limited mode.\n")
-        sys.stderr.write("Expected C5 compiler at ~/projects/c5\n")
-        sys.stderr.flush()
-    
-    while True:
-        try:
-            line = sys.stdin.readline()
-            if not line: 
-                sys.stderr.write("End of input stream, exiting.\n")
-                sys.stderr.flush()
-                break
-                
-            if line.startswith("Content-Length:"):
-                try:
-                    length_str = line.split(":", 1)[1].strip()
-                    length = int(length_str)
-                    sys.stdin.readline()  # Read blank line
-                    content = sys.stdin.read(length)
-                    msg = json.loads(content)
-                    method, params, msg_id = msg.get("method"), msg.get("params"), msg.get("id")
-                    
-                    if method == "initialize":
-                        sys.stderr.write("Received initialize request\n")
-                        sys.stderr.flush()
-                        send_response(msg_id, {"capabilities": {"textDocumentSync": 1, "hoverProvider": True, "semanticTokensProvider": {"legend": {"tokenTypes": TOKEN_TYPES, "tokenModifiers": TOKEN_MODS}, "full": True}}})
-                    elif method == "textDocument/hover":
-                        uri, pos = params["textDocument"]["uri"], params["position"]
-                        filename = uri.replace("file://", "")
-                        if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                        if lex is None:
-                            send_response(msg_id, None)
-                        else:
-                            analyzer = ANALYZER_CACHE.get(filename)
-                            if analyzer:
-                                info = analyzer.symbols.get((pos["line"], pos["character"]))
-                                if info: send_response(msg_id, {"contents": {"kind": "markdown", "value": f"```c5\n{info}\n```"}})
-                                else: send_response(msg_id, None)
-                            else: send_response(msg_id, None)
-                    elif method == "textDocument/semanticTokens/full":
-                        uri = params["textDocument"]["uri"]
-                        filename = uri.replace("file://", "")
-                        if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                        if lex is None:
-                            send_response(msg_id, {"data": []})
-                        else:
-                            analyzer = ANALYZER_CACHE.get(filename)
-                            if not analyzer and os.path.exists(filename):
-                                try:
-                                    with open(filename, 'r', encoding='utf-8') as f: 
-                                        content = f.read()
-                                        if content:
-                                            analyzer, _ = get_analyzer(content, filename)
-                                except Exception as e:
-                                    sys.stderr.write(f"Error reading file {filename}: {e}\n")
-                                    sys.stderr.flush()
-                            if analyzer: 
-                                send_response(msg_id, {"data": encode_tokens(analyzer.semantic_tokens)})
-                            else: 
-                                send_response(msg_id, {"data": []})
-                    elif method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"):
-                        doc = params["textDocument"]
-                        uri, text = doc["uri"], doc.get("text")
-                        if text is None and "contentChanges" in params: 
-                            text = params["contentChanges"][0]["text"]
-                        if text is not None:
-                            filename = uri.replace("file://", "")
-                            if filename.startswith("/") and os.name == 'nt': filename = filename[1:]
-                            if lex is not None:
-                                try:
-                                    analyzer, _ = get_analyzer(text, filename)
-                                    send_notification("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": analyzer.lsp_diagnostics})
-                                except Exception as e:
-                                    sys.stderr.write(f"Error analyzing document: {e}\n")
-                                    sys.stderr.flush()
-                                    send_notification("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
-                except json.JSONDecodeError as e:
-                    sys.stderr.write(f"JSON decode error: {e}\n")
-                    sys.stderr.flush()
-                except Exception as e:
-                    sys.stderr.write(f"Error processing message: {e}\n")
-                    sys.stderr.flush()
-        except Exception as e:
-            sys.stderr.write(f"Outer loop error: {e}\n")
-            sys.stderr.flush()
+    """Main entry point."""
+    if not PYGLS_AVAILABLE:
+        print("Error: pygls is not installed. Install with: pip install pygls", file=sys.stderr)
+        sys.exit(1)
 
-if __name__ == "__main__":
+    if not C5_AVAILABLE:
+        print("Error: C5 compiler modules not found.", file=sys.stderr)
+        sys.exit(1)
+
+    server = C5LanguageServer()
+    server.start()
+
+
+if __name__ == '__main__':
     main()

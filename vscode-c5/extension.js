@@ -28,7 +28,7 @@ function activate(context) {
         args: [serverModule]
     };
     let clientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'c5' }, { scheme: 'file', language: 'c5h' }],
+        documentSelector: [{ scheme: 'file', pattern: '**/*.c5' }],
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.c5')
         },
