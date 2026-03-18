@@ -57,8 +57,24 @@ def main():
     parser.add_argument("--build", nargs="?", const="build.c5b", help="Build project using a build file (.c5b)")
     parser.add_argument("-a", "--analyze", action="store_true", help="Analyze source files for errors and warnings without compiling")
     parser.add_argument("-d", "--debug", action="store_true", help="Compile and debug the executable, showing crash details if it fails")
+    parser.add_argument("-r", "--run", action="store_true", help="Compile, run, and delete the executable (minimal output)")
     
     args = parser.parse_args()
+
+    # Validate --run flag compatibility
+    if args.run:
+        if args.S:
+            print("Error: -r/--run cannot be used with -S (assembly only)")
+            sys.exit(1)
+        if args.analyze:
+            print("Error: -r/--run cannot be used with -a/--analyze")
+            sys.exit(1)
+        if args.lib:
+            print("Error: -r/--run cannot be used with --lib (library mode)")
+            sys.exit(1)
+        if args.debug:
+            print("Error: -r/--run cannot be used with -d/--debug (mutually exclusive)")
+            sys.exit(1)
 
     if args.setup_libs:
         global_path = os.path.expanduser("~/.c5/include")
@@ -237,7 +253,8 @@ def main():
             sys.exit(1)
     
     # Assembly phase
-    print(f"Compiling {', '.join([os.path.basename(f) for f in input_files])} to GAS assembly...")
+    if not args.run:
+        print(f"Compiling {', '.join([os.path.basename(f) for f in input_files])} to GAS assembly...")
     try:
         if len(input_files) == 1:
             result = compile_file(input_files[0], include_paths=args.include, is_library=is_lib)
@@ -272,12 +289,12 @@ def main():
         f.write(asm)
     
     # Assemble to object file
-    if lib_type == 'dynamic':
-        print(f"Assembling to position-independent object file...")
-        res = subprocess.run(["gcc", "-c", "-fPIC", s_file, "-o", o_file])
-    else:
-        print(f"Assembling...")
-        res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
+    if not args.run:
+        if lib_type == 'dynamic':
+            print(f"Assembling to position-independent object file...")
+        else:
+            print(f"Assembling...")
+    res = subprocess.run(["gcc", "-c", s_file, "-o", o_file])
     
     # Check for missing libraries early (before linking)
     lib_paths = [path for path, _ in lib_includes]
@@ -429,7 +446,8 @@ def main():
         # Executable mode: link with libraries
         if not final_out:
             final_out = base_name
-        print(f"Linking...")
+        if not args.run:
+            print(f"Linking...")
         cmd = ["gcc", o_file] + lib_paths + ["-o", final_out]
         res = subprocess.run(cmd)
         if res.returncode != 0:
@@ -437,9 +455,23 @@ def main():
             if os.path.exists(s_file): os.remove(s_file)
             if os.path.exists(o_file): os.remove(o_file)
             sys.exit(res.returncode)
-        print("Cleaning up intermediate files...")
+        if not args.run:
+            print("Cleaning up intermediate files...")
         if os.path.exists(s_file): os.remove(s_file)
         if os.path.exists(o_file): os.remove(o_file)
+        
+        # Run mode: compile, run, and delete without verbose output
+        if args.run:
+            # Execute the program
+            result = subprocess.run([final_out], capture_output=False)
+            exit_code = result.returncode
+            
+            # Delete the executable after running
+            if os.path.exists(final_out):
+                os.remove(final_out)
+            
+            sys.exit(exit_code)
+        
         print(f"Success! Executable ready at: {final_out}")
         
         # Debug mode: run the executable and analyze crashes

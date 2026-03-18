@@ -53,6 +53,10 @@ c5c main.c5 --analyze
 # Compile and debug the executable (shows crash details if it fails)
 c5c main.c5 -d
 c5c main.c5 --debug
+
+# Compile, run, and delete the executable (minimal output)
+c5c main.c5 -r
+c5c main.c5 --run
 ```
 
 ## 📚 Library System
