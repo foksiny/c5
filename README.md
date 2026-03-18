@@ -1930,6 +1930,101 @@ void main() {
 }
 ```
 
+### 27. Type Operations (Operator Overloading and Methods)
+
+C5 supports user-defined operator overloading and method definitions through the `typeop` keyword. This allows you to define custom behavior for operators and add methods to your own types.
+
+#### Syntax
+
+```c5
+typeop TypeName operator (parameters) {
+// body
+}
+```
+
+- `TypeName`: The name of an existing type (struct, union, or type alias).
+- `operator`: An operator token (`==`, `!=`, `+`, `-`, `*`, `/`, etc.) or a method name.
+- `parameters`: List of parameters with types, similar to function parameters.
+- The body contains statements and must return a value if the operator/method is expected to produce a result.
+
+The `typeop` definition acts as a function that implements the operation. For binary operators, the function should take two parameters (the left and right operands). For methods, the first parameter is the object (implicit `this`), followed by any explicit arguments.
+
+#### Examples
+
+**Operator Overloading:**
+
+```c5
+type betterString {
+string
+};
+
+typeop betterString == (string a, string b) {
+    if (a.length() != b.length()) {
+        return 0;
+    }
+    for (int i = 0; i < a.length(); i = i + 1) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typeop betterString != (string a, string b) {
+    if (a.length() != b.length()) {
+        return 1;
+    }
+    for (int i = 0; i < a.length(); i = i + 1) {
+        if (a[i] != b[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+```
+
+**Method Definition:**
+
+```c5
+typeop betterString.join(string str, string c) {
+    return str + (string)c;
+}
+
+void main() {
+    betterString mystr = "Hello";
+    // Use the overloaded operator
+    if (mystr == "Hello") {
+        std::printf("Equal\n");
+    }
+    // Use the custom method
+    std::printf("%s", mystr.join('!'));
+}
+```
+
+#### How It Works
+
+- The compiler generates a hidden function with a mangled name based on the type and operator/method.
+- When the operator or method is used, the compiler translates it into a call to that function.
+- The function follows the standard C ABI and can be inlined or optimized like any other function.
+
+#### Supported Operators
+
+Currently, the following operators can be overloaded:
+
+- Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`
+- Logical: `&&`, `||`
+
+You can also define custom methods with any valid identifier name.
+
+#### Notes
+
+- The type must be defined before any `typeop` for that type.
+- Each operator/method can be defined at most once per type.
+- The return type is inferred from the `return` statements in the body.
+- `typeop` functions are treated as regular functions for code generation and can be used in any context where a function pointer is allowed.
+
 ---
 
 ## 📚 Library Creation

@@ -8,7 +8,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword c5Keyword let const macro type fnct as syscall forstruct gettype forstruct
+syn keyword c5Keyword let const macro type typeop fnct as syscall forstruct gettype forstruct
 syn keyword c5Include include libinclude
 syn match c5PreProc "\v#[a-zA-Z_]+"
 syn keyword c5Conditional if else unless switch case default with
@@ -49,6 +49,10 @@ syn match c5Function "\v[a-zA-Z_][a-zA-Z0-9_]*\s*\ze\("
 " C-style array definitions: match variable name before '['
 syn match c5VariableName "\v\<[a-zA-Z_][a-zA-Z0-9_]*\>\ze\["
 
+" Type operator definitions: typeop TypeName.operator or typeop TypeName operator
+syn match c5TypeOpDef "\vtypeop\s+[a-zA-Z_][a-zA-Z0-9_]*\s+(\=\=|\!\=|\<\=|\>\=|\&\&|\|\||\<\<|\>\>|\->|\.\.\.|[+\-*/%&|^~=<>!]|\\.[a-zA-Z_][a-zA-Z0-9_]*)\ze\s*\("
+syn match c5TypeOpDef "\vtypeop\s+[a-zA-Z_][a-zA-Z0-9_]*\s+\.[a-zA-Z_][a-zA-Z0-9_]*\ze\s*\("
+
 " Brackets for array indexing/definition
 syn match c5Operator "\["
 syn match c5Operator "\]"
@@ -88,6 +92,6 @@ hi def link c5Hex Number
 hi def link c5String String
 hi def link c5Character Character
 hi def link c5Escape Special
-hi def link c5Comment Comment
+hi def link c5TypeOpDef Function
 
 let b:current_syntax = "c5"

@@ -16,6 +16,7 @@ def lex(code):
         ('LIBINCLUDE',r'libinclude\b'),
         ('MACRO',     r'macro\b'),
         ('TYPE',      r'type\b'),
+        ('TYPEOP',    r'typeop\b'),
         ('ANY',       r'any\b'),
         ('VOID',      r'void\b'),
         ('NULL',      r'NULL\b'),

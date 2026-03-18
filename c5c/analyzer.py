@@ -12,6 +12,7 @@ class SemanticAnalyzer:
         self.structs = {}
         self.enums = {}
         self.types = {}  # Type definitions (union/variant types)
+        self.typeops = {}  # Type operator overloads: {type_name: {op: (ret_ty, params, body, loc)}}
         self.used_vars = set()
         self.used_funcs = set(['main'])
         self.source_code = source_code
@@ -20,6 +21,7 @@ class SemanticAnalyzer:
         self.show_warnings = True
         self.library_funcs = set()  # Functions from library files (no dead code warnings)
         self.library_vars = set()   # Variables from library files (no dead code warnings)
+        self.var_types = {}         # Track variable types for hover (persistent across scopes)
         self.break_context = []  # Stack to track if we're inside a loop or switch (for break statements)
         self.try_stack = []  # Stack for try-catch error collection
         self.current_try_errors = None  # Current list to collect errors for the active try block
@@ -723,6 +725,7 @@ class SemanticAnalyzer:
             if self._type_contains_any(ty):
                 self.add_error("E043", f"Variable '{name}' cannot have type '{ty}'", loc)
             self.scopes[-1][name] = ty
+            self.var_types[name] = ty
             self.var_locs[name] = loc  # Store variable location
             if init:
                 # For lambdas, store the expected return type for proper analysis
@@ -1135,7 +1138,9 @@ class SemanticAnalyzer:
                 self.add_error("E043", f"Function '{node[2]}' cannot have return type '{node[1]}'", loc)
             self.ret_ty_stack.append(node[1])
             self.scopes.append({})
-            for pty, pname in node[3]: self.scopes[-1][pname] = pty
+            for pty, pname in node[3]:
+                self.scopes[-1][pname] = pty
+                self.var_types[pname] = pty
             for s in node[4]: self._analyze_node(s)
             curr_scope = self.scopes.pop()
             for var in curr_scope:
@@ -1143,6 +1148,100 @@ class SemanticAnalyzer:
                     var_loc = self.var_locs.get(var, loc)
                     self.add_warning("W001", var, var_loc)
             self.ret_ty_stack.pop()
+
+        elif tag == 'typeop':
+            # node: ('typeop', type_name, op, params, body, loc)
+            type_name, op, params, body = node[1], node[2], node[3], node[4]
+            # Push new scope for parameters
+            self.scopes.append({})
+            for pty, pname in params:
+                self.scopes[-1][pname] = pty
+                self.var_types[pname] = pty
+
+            # Helper function to strip location info from AST nodes (like compiler's _strip_loc)
+            def strip_loc(node):
+                if not isinstance(node, tuple):
+                    if isinstance(node, list):
+                        return [strip_loc(n) for n in node]
+                    return node
+                # Remove last element if it's a location tuple (line, col), except for try_catch_stmt
+                if len(node) >= 2 and node[0] != 'try_catch_stmt':
+                    last = node[-1]
+                    if isinstance(last, tuple) and len(last) == 2 and all(isinstance(x, int) for x in last):
+                        node = node[:-1]
+                # Recursively process children
+                return tuple(strip_loc(child) for child in node)
+
+            # First pass: collect return types from all return statements (including nested)
+            def collect_return_types(stmts):
+                types = []
+                for stmt in stmts:
+                    t = stmt[0]
+                    if t == 'return_stmt':
+                        if stmt[1]:
+                            ty = self._get_type(stmt[1])
+                            types.append(ty)
+                        else:
+                            types.append('void')
+                    elif t in ('if_stmt', 'unless_stmt'):
+                        types.extend(collect_return_types(stmt[2]))
+                        if stmt[3]:
+                            types.extend(collect_return_types(stmt[3]))
+                    elif t == 'while_stmt':
+                        types.extend(collect_return_types(stmt[2]))
+                    elif t == 'do_while_stmt':
+                        types.extend(collect_return_types(stmt[1]))
+                    elif t == 'for_stmt':
+                        types.extend(collect_return_types(stmt[4]))
+                    elif t == 'foreach_stmt':
+                        types.extend(collect_return_types(stmt[4]))
+                    elif t == 'forstruct_stmt':
+                        types.extend(collect_return_types(stmt[4]))
+                    elif t == 'switch_stmt':
+                        for case in stmt[2]:
+                            types.extend(collect_return_types(case[2]))
+                        if stmt[3]:
+                            types.extend(collect_return_types(stmt[3]))
+                    elif t == 'try_catch_stmt':
+                        types.extend(collect_return_types(stmt[1]))
+                        types.extend(collect_return_types(stmt[3]))
+                return types
+
+            return_types = collect_return_types(body)
+            # Determine inferred return type
+            inferred_ret_type = 'void'
+            if return_types:
+                non_void = [t for t in return_types if t != 'void']
+                void_count = len(return_types) - len(non_void)
+                if non_void:
+                    if void_count > 0:
+                        self.add_error("E002", "typeop has both void and non-void returns", loc)
+                    inferred_ret_type = non_void[0]
+                    for t in non_void[1:]:
+                        if not self._types_compatible(inferred_ret_type, t):
+                            self.add_error("E002", f"Inconsistent return types in typeop: {inferred_ret_type} vs {t}", loc)
+                else:
+                    inferred_ret_type = 'void'
+
+            # Push inferred return type and analyze body
+            self.ret_ty_stack.append(inferred_ret_type)
+            for s in body:
+                self._analyze_node(s)
+            self.ret_ty_stack.pop()
+
+            # Strip location info from body before storing for codegen
+            stripped_body = strip_loc(body)
+
+            # Update the typeop entry with the inferred return type and stripped body
+            if type_name in self.typeops and op in self.typeops[type_name]:
+                self.typeops[type_name][op] = (inferred_ret_type, params, stripped_body, loc)
+
+            # Check for unused parameters
+            curr_scope = self.scopes.pop()
+            for var in curr_scope:
+                if var not in self.used_vars and var not in self.functions and var not in self.library_vars:
+                    var_loc = self.var_locs.get(var, loc)
+                    self.add_warning("W001", var, var_loc)
 
         elif tag == 'if_stmt':
             self._analyze_node(node[1])
@@ -1221,6 +1320,7 @@ class SemanticAnalyzer:
             # Create new scope and add variable
             self.scopes.append({})
             self.scopes[-1][name] = ty
+            self.var_types[name] = ty
             self.var_locs[name] = loc
             
             # Analyze body
@@ -1256,7 +1356,9 @@ class SemanticAnalyzer:
             # Add index and value variables to a new scope
             self.scopes.append({})
             self.scopes[-1][index_var] = 'int'
+            self.var_types[index_var] = 'int'
             self.scopes[-1][value_var] = elem_ty
+            self.var_types[value_var] = elem_ty
             self.var_locs[index_var] = loc
             self.var_locs[value_var] = loc
             
@@ -1285,7 +1387,9 @@ class SemanticAnalyzer:
                 # Still analyze body with unknown types
                 self.scopes.append({})
                 self.scopes[-1][field_var] = 'unknown'
+                self.var_types[field_var] = 'unknown'
                 self.scopes[-1][name_var] = 'string'
+                self.var_types[name_var] = 'string'
                 self.var_locs[field_var] = loc
                 self.var_locs[name_var] = loc
                 self.break_context.append('loop')
@@ -1300,7 +1404,9 @@ class SemanticAnalyzer:
                 # For 'any' type, we also use 'void*' since the actual type is determined at runtime
                 self.scopes.append({})
                 self.scopes[-1][field_var] = 'void*'
+                self.var_types[field_var] = 'void*'
                 self.scopes[-1][name_var] = 'string'
+                self.var_types[name_var] = 'string'
                 self.var_locs[field_var] = loc
                 self.var_locs[name_var] = loc
                 
@@ -1461,6 +1567,7 @@ class SemanticAnalyzer:
             self.scopes.append({})
             # Declare catch parameter as string
             self.scopes[-1][catch_param] = 'string'
+            self.var_types[catch_param] = 'string'
             new_catch_body = []
             for stmt in catch_body:
                 new_stmt = self._analyze_node(stmt)
@@ -1484,6 +1591,7 @@ class SemanticAnalyzer:
             self.scopes.append({})
             for pty, pname in params:
                 self.scopes[-1][pname] = pty
+                self.var_types[pname] = pty
                 self.var_locs[pname] = loc
             for s in body:
                 self._analyze_node(s)
@@ -1582,8 +1690,25 @@ class SemanticAnalyzer:
                     if self._type_contains_any(member_ty):
                         self.add_error("E043", f"Type declaration '{ty_name}' cannot contain 'any' type", loc)
                 self.types[ty_name] = node[2]  # Store list of allowed types
+            elif node[0] == 'typeop':
+                # node: ('typeop', type_name, op, params, body, loc)
+                type_name, op, params, body = node[1], node[2], node[3], node[4]
+                # Check that the type exists (must be a struct or type declaration)
+                if type_name not in self.structs and type_name not in self.types:
+                    self.add_error("E018", f"Type '{type_name}' not defined for typeop", loc)
+                    continue
+                # Initialize typeop dict for this type if needed
+                if type_name not in self.typeops:
+                    self.typeops[type_name] = {}
+                # Check for redefinition of the same operator/method
+                if op in self.typeops[type_name]:
+                    self.add_error("E015", f"typeop {type_name}::{op} already defined", loc)
+                    continue
+                # For now, we'll just store the typeop definition; full analysis happens later in _analyze_node
+                self.typeops[type_name][op] = (params, body, loc)
             elif node[0] == 'pub_var':
                 ty, name = node[1], node[2]
                 if name in self.scopes[0]: self.add_error("E015", name, loc)
                 self.scopes[0][name] = ty
+                self.var_types[name] = ty
                 self.var_locs[name] = loc  # Store variable location

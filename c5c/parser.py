@@ -41,6 +41,8 @@ class Parser:
                 decls.append(self.parse_let_decl())
             elif self.peek().type == 'MACRO':
                 decls.append(self.parse_macro())
+            elif self.peek().type == 'TYPEOP':
+                decls.append(self.parse_typeop())
             else:
                 decls.append(self.parse_decl())
         return decls
@@ -185,6 +187,66 @@ class Parser:
                     body.append(('expr_stmt', expr, loc))
         self.consume('RBRACE')
         return ('macro', name, params, body, loc)
+    
+    def parse_typeop(self):
+        loc = self._loc()
+        self.consume('TYPEOP')
+        # Parse the type name (ID or namespaced ID)
+        type_name_tok = self.consume('ID')
+        type_name = type_name_tok.value
+        if self.peek().type == 'COLONCOLON':
+            self.consume('COLONCOLON')
+            type_name += '::' + self.consume('ID').value
+        # Now parse the operator/method name
+        # It could be an operator token (==, !=, +, -, etc.) or a method (dot followed by ID)
+        op = None
+        if self.peek().type == 'DOT':
+            # Method definition: .methodName
+            self.consume('DOT')
+            if self.peek().type != 'ID':
+                raise SyntaxError(f"Expected method name after '.' in typeop at line {self.peek().line}")
+            op_tok = self.consume('ID')
+            op = op_tok.value
+        elif self.peek().type in ('EQ', 'NEQ', 'PLUS', 'MINUS', 'MUL', 'DIV', 'MOD',
+                                'LT', 'GT', 'LEQ', 'GEQ', 'AND', 'OR', 'BAND', 'BOR', 'BXOR',
+                                'LSHIFT', 'RSHIFT', 'LAND', 'LOR'):
+            op_tok = self.consume()
+            op = op_tok.value
+        elif self.peek().type == 'ID':
+            op_tok = self.consume()
+            op = op_tok.value
+        else:
+            raise SyntaxError(f"Expected operator or method name after typeop type at line {self.peek().line}")
+        # Parse parameters
+        self.consume('LPAREN')
+        params = []
+        if self.peek().type != 'RPAREN':
+            while True:
+                pty = self.parse_type()
+                pname = self.consume('ID').value
+                params.append((pty, pname))
+                if self.peek().type == 'COMMA':
+                    self.consume('COMMA')
+                else:
+                    break
+        self.consume('RPAREN')
+        # Parse body
+        self.consume('LBRACE')
+        body = []
+        while self.peek().type != 'RBRACE':
+            # Similar to macro body, can have statements or expressions
+            if self.peek().type in ('IF', 'WHILE', 'FOR', 'DO', 'RETURN', 'VOID', 'SIGNED', 'UNSIGNED') or \
+               (self.peek().type == 'ID' and self._is_decl_start()):
+                body.append(self.parse_stmt())
+            else:
+                expr = self.parse_expr()
+                if self.peek().type == 'SEMI':
+                    self.consume('SEMI')
+                    body.append(('expr_stmt', expr, loc))
+                else:
+                    body.append(('expr_stmt', expr, loc))
+        self.consume('RBRACE')
+        return ('typeop', type_name, op, params, body, loc)
     
     def _is_decl_start(self):
         """Check if current position starts a declaration (for macro parsing)."""

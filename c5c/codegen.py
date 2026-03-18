@@ -1,7 +1,9 @@
 class CodeGen:
-    def __init__(self, optimizer=None, try_errors_map=None, weak_symbols=None):
+    def __init__(self, optimizer=None, try_errors_map=None, weak_symbols=None, typeops=None):
         self.optimizer = optimizer
         self.weak_symbols = weak_symbols or set()
+        self.typeops = typeops or {}
+        self.typeop_params = {}  # Map from mangled typeop function name to its parameter list
         self.rodata = []
         self.text = []
         self.string_literals = {}
@@ -66,6 +68,31 @@ class CodeGen:
         if '::' in name:
             return name.split('::')[-1]
         return name
+
+    def _mangle_typeop_op(self, op):
+        """Mangle a typeop operator or method name to a valid assembly identifier."""
+        mapping = {
+            '==': 'eq',
+            '!=': 'ne',
+            '+': 'add',
+            '-': 'sub',
+            '*': 'mul',
+            '/': 'div',
+            '%': 'mod',
+            '<': 'lt',
+            '>': 'gt',
+            '<=': 'le',
+            '>=': 'ge',
+            '&&': 'and',
+            '||': 'or',
+            '&': 'band',
+            '|': 'bor',
+            '^': 'bxor',
+            '<<': 'shl',
+            '>>': 'shr',
+            '~': 'not',
+        }
+        return mapping.get(op, op)
 
     def _get_type_enum_value(self, ty):
         """Map a type string to its c5code::types enum value."""
@@ -644,6 +671,17 @@ class CodeGen:
             elif node[0] == 'func':
                 _, ty, name, params, body = node
                 self.func_signatures[name] = ty
+            elif node[0] == 'typeop':
+                # Register typeop as a function
+                type_name, op, params, body = node[1], node[2], node[3], node[4]
+                if type_name in self.typeops and op in self.typeops[type_name]:
+                    ret_ty, stored_params, body, loc = self.typeops[type_name][op]
+                    mangled_type = type_name.replace('::', '_')
+                    mangled_op = self._mangle_typeop_op(op)
+                    func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
+                    self.func_signatures[func_name] = ret_ty
+                    # Store only the parameter types (list of strings), not the names
+                    self.typeop_params[func_name] = [p[0] for p in stored_params]
             elif node[0] == 'pub_var':
                 _, ty, name, init = node
                 self.global_vars[name] = ty
@@ -702,6 +740,15 @@ class CodeGen:
         for node in ast:
             if node[0] == 'func':
                 self.gen_func(node)
+            elif node[0] == 'typeop':
+                type_name, op, params, body = node[1], node[2], node[3], node[4]
+                if type_name in self.typeops and op in self.typeops[type_name]:
+                    ret_ty, stored_params, body, loc = self.typeops[type_name][op]
+                    mangled_type = type_name.replace('::', '_')
+                    mangled_op = self._mangle_typeop_op(op)
+                    func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
+                    synthetic_node = ('func', ret_ty, func_name, stored_params, body)
+                    self.gen_func(synthetic_node)
 
         # Generate __c5_global_init if there are any global array/struct initializers
         if self.global_array_inits:
@@ -3381,6 +3428,16 @@ __c5_str_replace:
             left = node[2]
             right = node[3]
             
+            # Check for typeop overload on left operand's type
+            ty_l = self._get_expr_type(left)
+            if ty_l in self.typeops and op in self.typeops[ty_l]:
+                mangled_type = ty_l.replace('::', '_')
+                mangled_op = self._mangle_typeop_op(op)
+                func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
+                # Build call node: (call, ('id', func_name), [left, right], loc)
+                call_node = ('call', ('id', func_name), [left, right], node[-1] if len(node) > 3 else (1,0))
+                return self.gen_expr(call_node)
+            
             # Short-circuit logical operators
             if op in ('&&', '||'):
                 # Evaluate left first
@@ -4119,7 +4176,17 @@ __c5_str_replace:
                         self.uses_str_replace = True
                         return 'string'
                 
-                raise Exception(f"Unknown method {method} on type {base_ty}")
+                # Check for typeop method
+                if base_ty in self.typeops and method in self.typeops[base_ty]:
+                    mangled_type = base_ty.replace('::', '_')
+                    mangled_op = self._mangle_typeop_op(method)
+                    func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
+                    # Transform member_access call into regular function call
+                    target = ('id', func_name)
+                    args = [base] + args
+                    # Continue to regular call handling (do not raise)
+                else:
+                    raise Exception(f"Unknown method {method} on type {base_ty}")
 
             
             # Handle built-in c_str() function
@@ -4184,6 +4251,9 @@ __c5_str_replace:
                         params = fnode[3]
                         param_types = [p[0] for p in params]
                         break
+                # If not found, check if it's a typeop
+                if not param_types and func_name in self.typeop_params:
+                    param_types = self.typeop_params[func_name]
             
             for arg in args:
                 if arg[0] == 'init_list':

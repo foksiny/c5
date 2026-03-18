@@ -338,7 +338,7 @@ def compile_file(filepath, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols, typeops=analyzer.typeops)
     asm = cg.generate(optimized_ast)
     return asm, lib_includes
 
@@ -447,7 +447,7 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     opt = Optimizer()
     optimized_ast = opt.optimize_ast(stripped_ast)
 
-    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols)
+    cg = CodeGen(try_errors_map=analyzer.try_errors_map, optimizer=opt, weak_symbols=weak_symbols, typeops=analyzer.typeops)
     asm = cg.generate(optimized_ast)
     return asm, lib_includes
 

@@ -25,7 +25,7 @@
   "Syntax table for `c5-mode'.")
 
 (defvar c5-keywords
-  '("include" "libinclude" "let" "const" "macro" "type" "fnct"
+  '("include" "libinclude" "let" "const" "macro" "type" "typeop" "fnct"
     "if" "else" "unless" "switch" "case" "default" "with" "as"
     "while" "do" "for" "foreach" "in" "break" "syscall"
     "return" "try" "catch" "struct" "enum" "signed" "unsigned"
@@ -67,6 +67,10 @@
    ;; Namespace resolution (e.g., std::printf)
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\)::\\([a-zA-Z0-9_]*\\)"
      (1 font-lock-constant-face)
+     (2 font-lock-function-name-face))
+   ;; Type operator definitions: typeop TypeName.operator or typeop TypeName operator
+   '("\\<typeop\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s+\\(\\(?:==\\|!=\\|<=\\|>=\\|&&\\|||\\|<<\\|>>\\|->\\|\\.\\.\\.\\|[+\\-*/%&|^~=<>!]\\|\\.[a-zA-Z_][a-zA-Z0-9_]*\\)\\)\\s-*("
+     (1 font-lock-type-face)
      (2 font-lock-function-name-face))
    ;; Function definitions (with return type, possibly generic/pointer)
    '("\\<\\([a-zA-Z_][a-zA-Z0-9_]*\\(?:<[^>]*>\\)*\\*?\\)\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*("
