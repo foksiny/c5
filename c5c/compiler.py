@@ -201,6 +201,17 @@ def _namespace_types_in_node(node, namespace):
     elif tag == 'macro':
         # Macro name
         l[1] = f"{namespace}::{l[1]}"
+    elif tag == 'typeop':
+        # Type name (the type being extended)
+        l[1] = _namespace_type(l[1], namespace)
+        # Op name - doesn't need namespacing (it's an operator or method name)
+        # Parameters - namespace the types
+        if len(l) > 3:
+            params = l[3]
+            new_params = []
+            for pty, pname in params:
+                new_params.append((_namespace_type(pty, namespace), pname))
+            l[3] = new_params
         
     return tuple(l)
 

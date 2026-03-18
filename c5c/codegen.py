@@ -743,12 +743,14 @@ class CodeGen:
             elif node[0] == 'typeop':
                 type_name, op, params, body = node[1], node[2], node[3], node[4]
                 if type_name in self.typeops and op in self.typeops[type_name]:
-                    ret_ty, stored_params, body, loc = self.typeops[type_name][op]
-                    mangled_type = type_name.replace('::', '_')
-                    mangled_op = self._mangle_typeop_op(op)
-                    func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
-                    synthetic_node = ('func', ret_ty, func_name, stored_params, body)
-                    self.gen_func(synthetic_node)
+                    ret_ty, stored_params, stored_body, loc = self.typeops[type_name][op]
+                    # Only generate code if body is provided (declarations have body=None)
+                    if stored_body is not None:
+                        mangled_type = type_name.replace('::', '_')
+                        mangled_op = self._mangle_typeop_op(op)
+                        func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
+                        synthetic_node = ('func', ret_ty, func_name, stored_params, stored_body)
+                        self.gen_func(synthetic_node)
 
         # Generate __c5_global_init if there are any global array/struct initializers
         if self.global_array_inits:

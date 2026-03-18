@@ -230,22 +230,30 @@ class Parser:
                 else:
                     break
         self.consume('RPAREN')
-        # Parse body
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            # Similar to macro body, can have statements or expressions
-            if self.peek().type in ('IF', 'WHILE', 'FOR', 'DO', 'RETURN', 'VOID', 'SIGNED', 'UNSIGNED') or \
-               (self.peek().type == 'ID' and self._is_decl_start()):
-                body.append(self.parse_stmt())
-            else:
-                expr = self.parse_expr()
-                if self.peek().type == 'SEMI':
-                    self.consume('SEMI')
-                    body.append(('expr_stmt', expr, loc))
+        # Parse body: either a semicolon (declaration) or a brace-enclosed body (definition)
+        if self.peek().type == 'SEMI':
+            # Declaration only (no body) - used in header files
+            self.consume('SEMI')
+            body = None  # Indicate no body provided
+        elif self.peek().type == 'LBRACE':
+            # Full definition with body
+            self.consume('LBRACE')
+            body = []
+            while self.peek().type != 'RBRACE':
+                # Similar to macro body, can have statements or expressions
+                if self.peek().type in ('IF', 'WHILE', 'FOR', 'DO', 'RETURN', 'VOID', 'SIGNED', 'UNSIGNED') or \
+                   (self.peek().type == 'ID' and self._is_decl_start()):
+                    body.append(self.parse_stmt())
                 else:
-                    body.append(('expr_stmt', expr, loc))
-        self.consume('RBRACE')
+                    expr = self.parse_expr()
+                    if self.peek().type == 'SEMI':
+                        self.consume('SEMI')
+                        body.append(('expr_stmt', expr, loc))
+                    else:
+                        body.append(('expr_stmt', expr, loc))
+            self.consume('RBRACE')
+        else:
+            raise SyntaxError(f"Expected ';' or '{{' after typeop parameters at line {self.peek().line}")
         return ('typeop', type_name, op, params, body, loc)
     
     def _is_decl_start(self):

@@ -1174,6 +1174,8 @@ class SemanticAnalyzer:
 
             # First pass: collect return types from all return statements (including nested)
             def collect_return_types(stmts):
+                if stmts is None:
+                    return []
                 types = []
                 for stmt in stmts:
                     t = stmt[0]
@@ -1223,14 +1225,15 @@ class SemanticAnalyzer:
                 else:
                     inferred_ret_type = 'void'
 
-            # Push inferred return type and analyze body
+            # Push inferred return type and analyze body (if provided)
             self.ret_ty_stack.append(inferred_ret_type)
-            for s in body:
-                self._analyze_node(s)
+            if body is not None:
+                for s in body:
+                    self._analyze_node(s)
             self.ret_ty_stack.pop()
 
             # Strip location info from body before storing for codegen
-            stripped_body = strip_loc(body)
+            stripped_body = strip_loc(body) if body is not None else None
 
             # Update the typeop entry with the inferred return type and stripped body
             if type_name in self.typeops and op in self.typeops[type_name]:
