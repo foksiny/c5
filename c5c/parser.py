@@ -110,14 +110,18 @@ class Parser:
         loc = self._loc()
         self.consume('STRUCT')
         name = self.consume('ID').value
-        self.type_names.add(name)  # Register struct name as a known type
+        self.type_names.add(name)
         self.consume('LBRACE')
         fields = []
         while self.peek().type != 'RBRACE':
             fty = self.parse_type()
             fname = self.consume('ID').value
-            self.consume('SEMI')
             fields.append((fty, fname))
+            while self.peek().type == 'COMMA':
+                self.consume('COMMA')
+                fname = self.consume('ID').value
+                fields.append((fty, fname))
+            self.consume('SEMI')
         self.consume('RBRACE')
         self.consume('SEMI')
         return ('struct_decl', name, fields, loc)
@@ -431,17 +435,25 @@ class Parser:
         else:
             raise SyntaxError(f"Unexpected {self.peek().type} after function signature on line {self.peek().line}")
 
+    def _parse_body_or_single(self):
+        """Parse either a braced block or a single statement."""
+        if self.peek().type == 'LBRACE':
+            self.consume('LBRACE')
+            body = []
+            while self.peek().type != 'RBRACE':
+                body.append(self.parse_stmt())
+            self.consume('RBRACE')
+            return body
+        else:
+            return [self.parse_stmt()]
+
     def parse_if_stmt(self):
         loc = self._loc()
         self.consume('IF')
         self.consume('LPAREN')
         cond = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         
         else_body = None
         if self.peek().type == 'ELSE':
@@ -449,11 +461,7 @@ class Parser:
             if self.peek().type == 'IF':
                 else_body = [self.parse_if_stmt()]
             else:
-                self.consume('LBRACE')
-                else_body = []
-                while self.peek().type != 'RBRACE':
-                    else_body.append(self.parse_stmt())
-                self.consume('RBRACE')
+                else_body = self._parse_body_or_single()
         return ('if_stmt', cond, body, else_body, loc)
 
     def parse_unless_stmt(self):
@@ -462,11 +470,7 @@ class Parser:
         self.consume('LPAREN')
         cond = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         
         else_body = None
         if self.peek().type == 'ELSE':
@@ -474,12 +478,7 @@ class Parser:
             if self.peek().type == 'IF':
                 else_body = [self.parse_if_stmt()]
             else:
-                self.consume('LBRACE')
-                else_body = []
-                while self.peek().type != 'RBRACE':
-                    else_body.append(self.parse_stmt())
-                self.consume('RBRACE')
-        # Return as 'unless_stmt' with condition negated using '!' operator
+                else_body = self._parse_body_or_single()
         negated_cond = ('unary', '!', cond, loc)
         return ('if_stmt', negated_cond, body, else_body, loc)
 
@@ -489,21 +488,13 @@ class Parser:
         self.consume('LPAREN')
         cond = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         return ('while_stmt', cond, body, loc)
 
     def parse_do_while_stmt(self):
         loc = self._loc()
         self.consume('DO')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         self.consume('WHILE')
         self.consume('LPAREN')
         cond = self.parse_expr()
@@ -520,11 +511,7 @@ class Parser:
         self.consume('SEMI')
         inc = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         return ('for_stmt', init, cond, inc, body, loc)
 
     def parse_with_stmt(self):
@@ -536,11 +523,7 @@ class Parser:
         ty = self.parse_type()
         name = self.consume('ID').value
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         return ('with_stmt', expr, ty, name, body, loc)
 
     def parse_foreach_stmt(self):
@@ -553,11 +536,7 @@ class Parser:
         self.consume('IN')
         array_expr = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         return ('foreach_stmt', index_var, value_var, array_expr, body, loc)
 
     def parse_forstruct_stmt(self):
@@ -570,11 +549,7 @@ class Parser:
         self.consume('IN')
         struct_expr = self.parse_expr()
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        body = []
-        while self.peek().type != 'RBRACE':
-            body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        body = self._parse_body_or_single()
         return ('forstruct_stmt', field_var, name_var, struct_expr, body, loc)
 
     def parse_switch_stmt(self):
@@ -616,21 +591,13 @@ class Parser:
     def parse_try_catch_stmt(self):
         loc = self._loc()
         self.consume('TRY')
-        self.consume('LBRACE')
-        try_body = []
-        while self.peek().type != 'RBRACE':
-            try_body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        try_body = self._parse_body_or_single()
         
         self.consume('CATCH')
         self.consume('LPAREN')
         catch_param = self.consume('ID').value
         self.consume('RPAREN')
-        self.consume('LBRACE')
-        catch_body = []
-        while self.peek().type != 'RBRACE':
-            catch_body.append(self.parse_stmt())
-        self.consume('RBRACE')
+        catch_body = self._parse_body_or_single()
         
         return ('try_catch_stmt', try_body, catch_param, catch_body, loc)
 
