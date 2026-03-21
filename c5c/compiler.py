@@ -184,7 +184,7 @@ def _namespace_types_in_node(node, namespace):
         fields = l[2]
         new_fields = []
         for fty, fname in fields:
-            new_fields.append((_namespace_type(pty, namespace), fname))
+            new_fields.append((_namespace_type(fty, namespace), fname))
         l[2] = new_fields
     elif tag in ('enum_decl', 'type_decl'):
         # Enum or Type title
