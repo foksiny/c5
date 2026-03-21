@@ -24,7 +24,7 @@ function activate(context) {
     console.log('Starting C5 Language Server:', serverModule);
     
     let serverOptions = {
-        command: 'python3',
+        command: '/home/jose/pyvenv/bin/python3',
         args: [serverModule]
     };
     let clientOptions = {
