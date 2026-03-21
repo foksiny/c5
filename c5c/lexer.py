@@ -54,6 +54,7 @@ def lex(code):
         ('ELLIPSIS',  r'\.\.\.'),
         ('DOT',       r'\.'),
         ('COLONCOLON',r'::'),
+        ('CONST_ASSIGN', r':='),
         ('COLON',     r':'),
         ('HASH',      r'#'),
         # Compound assignment operators (must come before simple operators)

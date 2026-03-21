@@ -1,0 +1,22 @@
+include <std.c5h>
+
+let int<32> pub_const := 100;
+
+void main() {
+    int<32> local_const := 10;
+
+    std::printf("pub_const = %d\n", pub_const);
+    std::printf("local_const = %d\n", local_const);
+
+    try {
+        pub_const = 200;
+    } catch (e) {
+        std::printf("Error modifying pub_const: %s\n", e);
+    }
+
+    try {
+        local_const = 20;
+    } catch (e) {
+        std::printf("Error modifying local_const: %s\n", e);
+    }
+}

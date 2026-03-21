@@ -83,7 +83,11 @@ class Parser:
             # No initializer - zero initialization
             self.consume('SEMI')
             return ('pub_var', ty, name, None, loc)
-        self.consume('ASSIGN')
+        if self.peek().type == 'CONST_ASSIGN':
+            self.consume('CONST_ASSIGN')
+            ty = f"const {ty}"
+        else:
+            self.consume('ASSIGN')
         if self.peek().type == 'LBRACE':
             # Array or struct initializer list
             self.consume('LBRACE')
@@ -702,7 +706,11 @@ class Parser:
             if self.peek().type == 'SEMI':
                 self.consume('SEMI')
                 return ('var_decl', ty, name, None, loc)
-            self.consume('ASSIGN')
+            if self.peek().type == 'CONST_ASSIGN':
+                self.consume('CONST_ASSIGN')
+                ty = f"const {ty}"
+            else:
+                self.consume('ASSIGN')
             if self.peek().type == 'LBRACE':
                 self.consume('LBRACE')
                 init_list = []

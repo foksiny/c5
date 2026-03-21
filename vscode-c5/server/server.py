@@ -272,17 +272,6 @@ class C5LanguageServer(LanguageServer):
             # Analyze the cleaned AST with merged symbols
             analyzer.analyze(cleaned_ast, require_main=False, exit_on_error=False)
 
-            # Convert errors to LSP diagnostics
-            for error in analyzer.errors:
-                diag = self._parse_error_to_diagnostic(error)
-                if diag:
-                    diagnostics.append(diag)
-
-            for warning in analyzer.warnings:
-                diag = self._parse_warning_to_diagnostic(warning)
-                if diag:
-                    diagnostics.append(diag)
-
             # Cache analysis results for hover
             self.analysis_cache[uri] = {
                 'ast': ast,
@@ -291,16 +280,7 @@ class C5LanguageServer(LanguageServer):
             }
 
         except Exception as e:
-            # Parse or analysis error - create a diagnostic
-            diagnostics.append(types.Diagnostic(
-                range=types.Range(
-                    start=types.Position(line=0, character=0),
-                    end=types.Position(line=0, character=1)
-                ),
-                severity=types.DiagnosticSeverity.Error,
-                code="PARSE_ERROR",
-                message=str(e)
-            ))
+            pass
 
         # Publish diagnostics
         self.text_document_publish_diagnostics(types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics))

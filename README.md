@@ -743,6 +743,31 @@ const float<32> PI = 3.14159;
 const char NEWLINE = '\n';
 ```
 
+#### Const Assignment (`:=`)
+C5 provides a shorthand `:=` operator to declare and initialize a const variable in a single expression. This is equivalent to using `const` explicitly but with more concise syntax:
+
+```c
+include <std.c5h>
+
+let int<32> pub_const := 100;  // Same as: let const int<32> pub_const = 100;
+
+void main() {
+    int<32> local_const := 10;  // Same as: const int<32> local_const = 10;
+    
+    std::printf("pub_const = %d\n", pub_const);
+    std::printf("local_const = %d\n", local_const);
+    
+    // Error: cannot modify a const variable
+    // local_const = 20;  // E042: Const Violation
+}
+```
+
+**Key features:**
+- **Concise syntax**: `type name := value` is shorter than `const type name = value`
+- **Same semantics**: Variables declared with `:=` are immutable, just like explicitly declared `const` variables
+- **Works everywhere**: Use `:=` for both local variables and public/global variables (`let`)
+- **Error enforcement**: Attempting to modify a `:=` variable produces error E042 ("Cannot modify a const variable")
+
 ### 8. Control Flow
 C5 supports standard C control structures:
 - `if` / `else`

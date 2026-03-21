@@ -1,5 +1,4 @@
 include <std.c5h>
-include <str.c5h>
 
 // i could also use typeop with already defined c5 types to extend them but i'll use a custom type for this example.
 type betterString {
