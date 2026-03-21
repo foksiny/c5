@@ -82,10 +82,10 @@
    ;; Constants (integers and floats)
    '("\\<[0-9]+\\(?:\\.[0-9]+\\)?\\(?:[eE][+-]?[0-9]+\\)?\\>" . font-lock-constant-face)
    '("\\<0x[0-9a-fA-F]+\\>" . font-lock-constant-face)
-   ;; Operators and member access
-   '("->\\|\\.\\|::" . font-lock-keyword-face)
-   '("\\+\\+\\|--\\|\\+=\\|-=\\|\\*=\\|/=\\|%=\\|<<=\\|>>=\\|&=\\||=\\|\\^=\\|==\\|!=\\|<=\\|>=\\|&&\\|||\\|<<\\|>>\\|\\.\\.\\." . font-lock-comment-delimiter-face)
-   )
+    ;; Operators and member access
+    '("->\\|\\.\\|::" . font-lock-keyword-face)
+    '(":=\\|\\+\\+\\|--\\|\\+=\\|-=\\|\\*=\\|/=\\|%=\\|<<=\\|>>=\\|&=\\||=\\|\\^=\\|==\\|!=\\|<=\\|>=\\|&&\\|||\\|<<\\|>>\\|\\.\\.\\." . font-lock-comment-delimiter-face)
+    )
   "Font-lock keywords for `c5-mode'.")
 
 ;;;###autoload

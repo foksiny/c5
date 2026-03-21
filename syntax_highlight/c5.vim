@@ -29,6 +29,7 @@ syn region c5ParameterizedType start="\v[a-zA-Z_][a-zA-Z0-9_]*\<" end="\v\>" con
 
 " Namespaces and Operators
 syn match c5Namespace "\v[a-zA-Z_][a-zA-Z0-9_]*::"
+syn match c5Operator "\v\:="
 syn match c5Operator "\v\.\.\."
 syn match c5Operator "\v-\>"
 syn match c5Operator "\v\."
