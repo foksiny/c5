@@ -1,0 +1,29 @@
+include <std.c5h>
+
+macro BOARD_CAP() {
+    100
+}
+
+let array<int<32>> board;
+
+void main() {
+    for (int x = 0; x < BOARD_CAP() + 1; x++) {
+        board.push(0);
+    }
+    board[BOARD_CAP() - 2] = 1;
+    string symbols = " *";
+
+    for (int i = 0; i < BOARD_CAP() - 2; i++) {
+        for (int j = 0; j < BOARD_CAP(); j++) {
+            int<32> val = board[j];
+            std::printf("%c", symbols[val]);
+        }
+        std::printf("\n");
+
+        int<32> pattern = (board[0] << 1) | board[1];
+        for (int j2 = 1; j2 < BOARD_CAP() - 1; j2++) {
+            pattern = ((pattern << 1) & 7) | board[j2 + 1];
+            board[j2] = (int<32>)((110 >> pattern) & 1);
+        }
+    }
+}

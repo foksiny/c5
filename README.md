@@ -1829,6 +1829,14 @@ C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, a
 - `+` (unary plus)
 - `-` (unary minus)
 
+#### Conditional Operator (Ternary)
+C5 supports the ternary conditional operator `? :` for concise conditional expressions:
+- Syntax: `condition ? true_expr : false_expr`
+- The condition must evaluate to an integer type (non-zero is true, zero is false)
+- The true and false expressions must have compatible types. For convenience, an integer literal can be implicitly converted to any integer type to match the other branch.
+- The result type is determined by the common type of both branches, with integer literals adapting to the other branch's type.
+- The operator has right-associative precedence between logical OR (`||`) and assignment (`=`).
+
 **Operator Precedence** (from highest to lowest):
 
 1. Unary (`!`, `~`, `+`, `-`, `*`, `&`)
@@ -1842,7 +1850,8 @@ C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, a
 9. Bitwise OR (`|`)
 10. Logical AND (`&&`)
 11. Logical OR (`||`)
-12. Assignment (`=`)
+12. Conditional (`? :`)
+13. Assignment (`=`)
 
 **Notes:**
 - Logical operators `&&` and `||` perform short-circuit evaluation.

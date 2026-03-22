@@ -711,6 +711,13 @@ class Parser:
     def parse_expr(self):
         loc = self._loc()
         left = self.parse_logical_or()
+        # Check for ternary operator (condition ? true_expr : false_expr)
+        if self.peek().type == 'QUESTION':
+            self.consume('QUESTION')
+            true_expr = self.parse_expr()
+            self.consume('COLON')
+            false_expr = self.parse_expr()
+            return ('ternary', left, true_expr, false_expr, loc)
         tok = self.peek()
         if tok.type == 'ASSIGN':
             self.consume('ASSIGN')

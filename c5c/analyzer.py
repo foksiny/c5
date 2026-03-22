@@ -30,7 +30,8 @@ class SemanticAnalyzer:
         self.try_errors_map = {}  # Map from try_catch node location to list of errors
         self.ret_ty_stack = [] # Stack for tracking return types of nested functions/lambdas
         self.refined_types = {}  # For 'any' variables: maps variable name to its current refined type
-        
+        self.ternary_type_map = {}  # Stores resolved result type for ternary expressions
+
         # Built-in c5core::types enum for gettype
         self.enums['c5core::types'] = {
             'INT': 0,
@@ -403,6 +404,23 @@ class SemanticAnalyzer:
             return self._get_type(node[1])
         if tag in ('pre_inc', 'pre_dec', 'post_inc', 'post_dec'):
             return self._get_type(node[1])
+        if tag == 'ternary':
+            # If we have a resolved type from semantic analysis, use it
+            if node in self.ternary_type_map:
+                return self.ternary_type_map[node]
+            # Fallback: compute based on branches
+            true_expr = node[2]
+            false_expr = node[3]
+            true_ty = self._get_type(true_expr)
+            false_ty = self._get_type(false_expr)
+            if true_ty == false_ty:
+                return true_ty
+            # If one branch is integer literal, return the other branch's type (as a heuristic)
+            if true_expr[0] == 'number' and isinstance(true_expr[1], int) and self._is_integer_type(false_ty):
+                return false_ty
+            if false_expr[0] == 'number' and isinstance(false_expr[1], int) and self._is_integer_type(true_ty):
+                return true_ty
+            return true_ty  # default to true branch type
         return "unknown"
 
     # Helper methods for type checking
@@ -1119,6 +1137,42 @@ class SemanticAnalyzer:
             # Check type: must be integer or pointer (not float, struct, etc.)
             if not (self._is_integer_type(ty) or ty.endswith('*')):
                 self.add_error("E002", f"Operand of increment/decrement must be integer or pointer type, not {ty}", loc)
+
+        elif tag == 'ternary':
+            cond = node[1]
+            true_expr = node[2]
+            false_expr = node[3]
+            loc = self._get_loc(node)
+            # Analyze subexpressions
+            self._analyze_node(cond)
+            self._analyze_node(true_expr)
+            self._analyze_node(false_expr)
+            # Condition must be integer-like
+            cond_ty = self._get_type(cond)
+            if not self._is_integer_type(cond_ty):
+                self.add_error("E002", f"Condition of ternary must be integer type, not {cond_ty}", loc)
+            # Determine the types of the branches
+            true_ty = self._get_type(true_expr)
+            false_ty = self._get_type(false_expr)
+            result_ty = None
+            if true_ty == false_ty:
+                result_ty = true_ty
+            else:
+                # Allow integer literal to coerce to the other branch's integer type
+                def is_int_literal(expr):
+                    return expr[0] == 'number' and isinstance(expr[1], int)
+                if is_int_literal(true_expr) and self._is_integer_type(false_ty):
+                    # Check literal fits in false_ty
+                    self._check_int_literal_against_type(false_ty, true_expr[1], loc)
+                    result_ty = false_ty
+                elif is_int_literal(false_expr) and self._is_integer_type(true_ty):
+                    self._check_int_literal_against_type(true_ty, false_expr[1], loc)
+                    result_ty = true_ty
+                else:
+                    self.add_error("E002", f"Ternary branches have incompatible types {true_ty} and {false_ty}", loc)
+                    result_ty = true_ty  # fallback
+            # Store the resolved result type for this ternary node
+            self.ternary_type_map[node] = result_ty
 
         elif tag == 'binop':
             op, left, right = node[1], node[2], node[3]

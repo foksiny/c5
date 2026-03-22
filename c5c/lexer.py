@@ -52,6 +52,7 @@ def lex(code):
         ('GETTYPE',   r'gettype\b'),
         ('FLOAT',     r'(\d+\.\d*|\.\d+)([eE][+-]?\d+)?|\d+[eE][+-]?\d+'),
         ('ELLIPSIS',  r'\.\.\.'),
+        ('QUESTION', r'\?'),
         ('DOT',       r'\.'),
         ('COLONCOLON',r'::'),
         ('CONST_ASSIGN', r':='),

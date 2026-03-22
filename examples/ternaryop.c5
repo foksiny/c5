@@ -1,0 +1,9 @@
+include <std.c5h>
+
+void main() {
+    int<32> a = 10;
+    int<32> b = 20;
+    int<32> c = a == b ? 15 : a + b;
+
+    std::printf("c: %d\n", c);
+}

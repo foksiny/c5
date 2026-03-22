@@ -3160,6 +3160,28 @@ __c5_str_replace:
             if addr_on_stack:
                 self.text.append("    pop %r10")
             return ty
+        elif node[0] == 'ternary':
+            # Generate code for ternary conditional operator
+            cond = node[1]
+            true_expr = node[2]
+            false_expr = node[3]
+            # Generate condition code (result in %rax)
+            self.gen_expr(cond)
+            # Create labels
+            self.label_count += 1
+            false_label = f".Lternary_false_{self.label_count}"
+            end_label = f".Lternary_end_{self.label_count}"
+            # Test condition
+            self.text.append("    test %rax, %rax")
+            self.text.append(f"    jz {false_label}")
+            # True branch
+            true_ty = self.gen_expr(true_expr)
+            self.text.append(f"    jmp {end_label}")
+            # False branch
+            self.text.append(f"{false_label}:")
+            false_ty = self.gen_expr(false_expr)
+            self.text.append(f"{end_label}:")
+            return true_ty
         elif node[0] in ('id', 'member_access', 'arrow_access', 'array_access', 'namespace_access'):
             addr, ty = self.get_lvalue(node)
             # Strip const qualifier so float/array/struct checks work for const globals
