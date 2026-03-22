@@ -155,6 +155,24 @@ class SemanticAnalyzer:
         m, t = self.error_db.get(code, ("Error", "-"))
         if msg: m += f" [{msg}]"
         
+        # Enhance E001 (Undefined symbol) with suggestions
+        if code == "E001" and msg:
+            import difflib
+            all_symbols = set()
+            for scope in self.scopes:
+                all_symbols.update(scope.keys())
+            all_symbols.update(self.functions.keys())
+            all_symbols.update(self.structs.keys())
+            all_symbols.update(self.enums.keys())
+            all_symbols.update(self.types.keys())
+            # Include enumerators
+            for enum_dict in self.enums.values():
+                all_symbols.update(enum_dict.keys())
+            # Find close matches
+            matches = difflib.get_close_matches(msg, sorted(all_symbols), n=3, cutoff=0.6)
+            if matches:
+                m += f" (did you mean: {', '.join(matches)})"
+        
         line, col = loc if loc else (1, 0)
         location_str = f"{self.filename}:{line}:{col}"
         source_context = self._format_source_line(line, col)
@@ -352,6 +370,11 @@ class SemanticAnalyzer:
                         return base_ty[6:-1]
                     if base_ty.startswith('array<') and (method == 'push' or method == 'insert' or method == 'insertItems' or method == 'clear'):
                         return 'void'
+                # Check user-defined typeops
+                if base_ty in self.typeops and method in self.typeops[base_ty]:
+                    # typeop entry: (ret_ty, params, body, loc) after analysis
+                    ret_ty = self.typeops[base_ty][method][0]
+                    return ret_ty
             
             if target[0] == 'id':
                 name = target[1]
@@ -572,9 +595,10 @@ class SemanticAnalyzer:
         if target_type == 'any' or source_type == 'any':
             return True
         # Special case: void* is compatible with any pointer type (and vice versa)
-        if source_type == 'void*' and target_type.endswith('*'):
+        # Pointer types include those ending with '*' and the special 'fnptr' type
+        if source_type == 'void*' and (target_type.endswith('*') or target_type == 'fnptr'):
             return True
-        if target_type == 'void*' and source_type.endswith('*'):
+        if target_type == 'void*' and (source_type.endswith('*') or source_type == 'fnptr'):
             return True
         # If target is a union type, check if source matches any member
         if target_type in self.types:
@@ -589,6 +613,40 @@ class SemanticAnalyzer:
         t_norm = self._normalize_type(target_type)
         s_norm = self._normalize_type(source_type)
         return t_norm == s_norm
+
+    def _check_struct_init(self, struct_type, init_node, loc):
+        """Check an init_list against a struct type, supporting nested struct initializers and pointer-to-struct conversion."""
+        if struct_type not in self.structs:
+            self.add_error("E002", f"Unknown struct type '{struct_type}'", loc)
+            return
+        fields = self.structs[struct_type]  # list of (field_type, field_name)
+        elements = init_node[1]
+        for i, elem in enumerate(elements):
+            if i >= len(fields):
+                self.add_error("E015", f"too many initializers for struct {struct_type}", loc)
+                break
+            field_type = fields[i][0]
+            if elem[0] == 'number' and isinstance(elem[1], int):
+                self._check_int_literal_against_type(field_type, elem[1], loc)
+            elif elem[0] == 'float':
+                self._check_float_literal_against_type(field_type, elem[1], loc)
+            elif elem[0] == 'init_list':
+                # Smart pointer conversion: if field is a pointer to a struct, treat init_list as that struct
+                if field_type.endswith('*'):
+                    pointed_type = field_type[:-1]
+                    if pointed_type in self.structs:
+                        # Check that init_list matches the pointed-to struct
+                        self._check_struct_init(pointed_type, elem, loc)
+                    else:
+                        self.add_error("E002", f"Cannot initialize pointer to non-struct type {pointed_type} with init_list", loc)
+                elif field_type in self.structs:
+                    self._check_struct_init(field_type, elem, loc)
+                else:
+                    self.add_error("E002", f"Cannot initialize field of type {field_type} with init_list", loc)
+            else:
+                elem_type = self._get_type(elem)
+                if not self._types_compatible(field_type, elem_type):
+                    self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
 
     def _int_literal_fits(self, ty, value):
         """Check if an integer literal fits in the given type without adding error."""
@@ -749,22 +807,21 @@ class SemanticAnalyzer:
                     elif init[0] == 'init_list':
                         # Struct or array initializer
                         if ty in self.structs:
-                            fields = self.structs[ty]  # list of (field_type, field_name)
-                            elements = init[1]
-                            for i, elem in enumerate(elements):
-                                if i >= len(fields):
-                                    self.add_error("E015", f"too many initializers for struct {ty}", loc)
-                                    break
-                                field_type = fields[i][0]
-                                # Check element compatibility
-                                if elem[0] == 'number' and isinstance(elem[1], int):
-                                    self._check_int_literal_against_type(field_type, elem[1], loc)
-                                elif elem[0] == 'float':
-                                    self._check_float_literal_against_type(field_type, elem[1], loc)
-                                else:
-                                    elem_type = self._get_type(elem)
-                                    if not self._types_compatible(field_type, elem_type):
-                                        self.add_error("E002", f"Cannot initialize field of type {field_type} with {elem_type}", loc)
+                            self._check_struct_init(ty, init, loc)
+                        # Pointer to struct: treat init_list as struct and take its address
+                        elif ty.endswith('*'):
+                            pointed_type = ty[:-1]
+                            # Strip qualifiers
+                            if pointed_type.startswith('const '):
+                                pointed_type = pointed_type[6:]
+                            if pointed_type.startswith('signed '):
+                                pointed_type = pointed_type[7:]
+                            if pointed_type.startswith('unsigned '):
+                                pointed_type = pointed_type[9:]
+                            if pointed_type in self.structs:
+                                self._check_struct_init(pointed_type, init, loc)
+                            else:
+                                self.add_error("E002", f"Cannot initialize pointer to non-struct type {ty} with init_list", loc)
                         # Fixed-size array initializer
                         elif self._is_fixed_array_type(ty):
                             elem_ty = self._get_fixed_array_element_type(ty)
@@ -884,6 +941,18 @@ class SemanticAnalyzer:
                                 self._check_int_literal_against_type(field_type, elem[1], loc)
                             elif elem[0] == 'float':
                                 self._check_float_literal_against_type(field_type, elem[1], loc)
+                            elif elem[0] == 'init_list':
+                                # Smart pointer conversion: if field is a pointer to a struct, treat init_list as that struct
+                                if field_type.endswith('*'):
+                                    pointed_type = field_type[:-1]
+                                    if pointed_type in self.structs:
+                                        self._check_struct_init(pointed_type, elem, loc)
+                                    else:
+                                        self.add_error("E002", f"Cannot initialize pointer to non-struct type {pointed_type} with init_list", loc)
+                                elif field_type in self.structs:
+                                    self._check_struct_init(field_type, elem, loc)
+                                else:
+                                    self.add_error("E002", f"Cannot assign {elem_type} to field {fields[i][1]} of type {field_type}", loc)
                             else:
                                 elem_type = self._get_type(elem)
                                 if not self._types_compatible(field_type, elem_type):
@@ -915,6 +984,20 @@ class SemanticAnalyzer:
                                 elem_type = self._get_type(elem)
                                 if not self._types_compatible(elem_ty, elem_type):
                                     self.add_error("E002", f"Cannot assign {elem_type} to array element of type {elem_ty}", loc)
+                    elif l_ty.endswith('*'):
+                        # Smart conversion: init_list to pointer-to-struct
+                        pointed_type = l_ty[:-1]
+                        # Strip qualifiers
+                        if pointed_type.startswith('const '):
+                            pointed_type = pointed_type[6:]
+                        if pointed_type.startswith('signed '):
+                            pointed_type = pointed_type[7:]
+                        if pointed_type.startswith('unsigned '):
+                            pointed_type = pointed_type[9:]
+                        if pointed_type in self.structs:
+                            self._check_struct_init(pointed_type, right, loc)
+                        else:
+                            self.add_error("E002", f"Cannot assign initializer list to pointer to non-struct type {l_ty}", loc)
                     else:
                         self.add_error("E002", f"Cannot assign initializer list to non-aggregate type {l_ty}", loc)
                 else:

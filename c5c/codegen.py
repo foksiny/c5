@@ -2204,6 +2204,67 @@ __c5_str_replace:
             self.text.append("    push %rax") # ptr
             return target_ty
 
+        # Handle pointer to struct: allocate on heap, initialize, return pointer
+        if target_ty.endswith('*'):
+            pointed = target_ty[:-1]
+            # Strip qualifiers
+            if pointed.startswith('const '):
+                pointed = pointed[6:]
+            if pointed.startswith('signed '):
+                pointed = pointed[7:]
+            if pointed.startswith('unsigned '):
+                pointed = pointed[9:]
+            if pointed in self.structs:
+                st = self.structs[pointed]
+                st_sz = st['size']
+                fields = list(st['fields'].items())
+                items = node[1]
+                
+                # Allocate memory on heap (align stack)
+                self.text.append("    sub $8, %rsp")
+                self.text.append(f"    mov ${st_sz}, %rdi")
+                self.text.append("    call malloc@PLT")
+                self.text.append("    add $8, %rsp")
+                # %rax = pointer to allocated struct, save in %r11
+                self.text.append("    mov %rax, %r11")
+                
+                # Initialize each field
+                for i, item in enumerate(items):
+                    if i >= len(fields): break
+                    fname, finfo = fields[i]
+                    f_ty = finfo['type']
+                    # Save base pointer on stack
+                    self.text.append("    push %r11")
+                    # Generate the item value (may push onto stack)
+                    self._gen_init_list_recursive(item, f_ty)
+                    # After call, stack: [item_result][saved_base]
+                    if self._is_aggregate(f_ty):
+                        # Load saved base into %r11 and pop saved_base, leaving item_result on top
+                        self.text.append("    mov 8(%rsp), %r11")
+                        self.text.append("    add $8, %rsp")   # pop saved_base
+                        p_sz = self.sizeof(f_ty)
+                        # Copy aggregate to heap struct
+                        self.text.append("    mov %rsp, %rsi")   # src = item_result
+                        self.text.append("    push %r11")        # preserve base across memcpy
+                        self.text.append(f"    lea {finfo['offset']}(%r11), %rdi")
+                        self.text.append(f"    mov ${p_sz}, %rdx")
+                        self.text.append("    sub $8, %rsp")
+                        self.text.append("    call memcpy@PLT")
+                        self.text.append("    add $8, %rsp")
+                        self.text.append("    pop %r11")         # restore base
+                        # Pop the aggregate data from stack
+                        self.text.append(f"    add ${p_sz}, %rsp")
+                    else:
+                        # Non-aggregate: result in %rax, load saved base and clean both
+                        self.text.append("    mov 8(%rsp), %r11")  # load saved base
+                        self.text.append("    add $16, %rsp")       # pop result and saved_base
+                        # Store the value to the heap struct
+                        self.text.append(f"    mov %rax, {finfo['offset']}(%r11)")
+                # Result pointer already in %r11, move to %rax and push
+                self.text.append("    mov %r11, %rax")
+                self.text.append("    push %rax")
+                return target_ty
+
         if target_ty in self.structs:
             st = self.structs[target_ty]
             st_sz = st['size']
@@ -2217,9 +2278,9 @@ __c5_str_replace:
                 f_ty = finfo['type']
                 self._gen_init_list_recursive(item, f_ty)
                 p_sz = self.sizeof(f_ty) if self._is_aggregate(f_ty) else 8
-                # For pointer types, just move the pointer value directly
+                # For pointer types, store the pointer value to the field address: base = %rsp + p_sz
                 if f_ty.endswith('*'):
-                    self.text.append(f"    mov %rax, {finfo['offset']}(%rsp)")
+                    self.text.append(f"    mov %rax, {p_sz + finfo['offset']}(%rsp)")
                 else:
                     self.text.append(f"    lea {p_sz + finfo['offset']}(%rsp), %rdi") # dest
                     self.text.append("    mov %rsp, %rsi") # src

@@ -35,27 +35,19 @@ typeop String.join(string str, string c) {
 }
 
 const unsigned int<1> isdigit(string s);
-
+const unsigned int<1> isalpha(string s);
 const unsigned int<1> streq(string a, string b);
-
-string join_c(string s, char c);
-
 const unsigned int<1> isalnum(string s);
-
 const unsigned int<1> startswith(string str, string txt);
-
 const unsigned int<1> endswith(string str, string txt);
 
 array<string> split(string txt, char sep);
-
 array<string> split_s(string txt, string seps);
+string join_c(string s, char c);
 
 string input();
-
 int i_input();
-
 float f_input();
 
 int toint(string str);
-
 float tofloat(string str);
