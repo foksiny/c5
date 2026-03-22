@@ -33,7 +33,8 @@ class CodeGen:
         self.func_has_return = False # Track if function has return
         self.current_func_ret_ty = "" # Current function return type (initialize to empty string)
         self.global_array_inits = []  # List of (mangled_name, ty, init_node) for global arrays
-        
+        self.active_typeops = set()   # Set of (type_name, op) currently being generated (to avoid recursion)
+
         # Built-in c5core::types enum for gettype
         self.enums['c5core::types'] = {
             'INT': 0,
@@ -750,7 +751,12 @@ class CodeGen:
                         mangled_op = self._mangle_typeop_op(op)
                         func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
                         synthetic_node = ('func', ret_ty, func_name, stored_params, stored_body)
-                        self.gen_func(synthetic_node)
+                        # Mark this typeop as active to prevent recursive expansion inside its body
+                        self.active_typeops.add((type_name, op))
+                        try:
+                            self.gen_func(synthetic_node)
+                        finally:
+                            self.active_typeops.discard((type_name, op))
 
         # Generate __c5_global_init if there are any global array/struct initializers
         if self.global_array_inits:
@@ -2491,29 +2497,132 @@ __c5_str_replace:
             if src_ty == 'any' and dst_ty != 'any':
                 # Extract value from any
                 # At this point, tag in %rax, data in %rdx
+                dst_tag = self._get_type_enum_value(dst_ty)
                 dst_sz = self.sizeof(dst_ty)
-                if dst_sz <= 8:
-                    # Move data to appropriate register
-                    if dst_ty.startswith('float'):
-                        # Move from %rdx to %xmm0
-                        self.text.append("    movq %rdx, %xmm0")
-                        if dst_ty == 'float<32>':
-                            self.text.append("    cvtsd2ss %xmm0, %xmm0")
-                        return dst_ty
-                    else:
-                        # Move from %rdx to %rax, with possible truncation
-                        self.text.append("    mov %rdx, %rax")
-                        if dst_sz == 4:
-                            self.text.append("    mov %eax, %eax")
-                        elif dst_sz == 2:
-                            self.text.append("    mov %ax, %ax")
-                        elif dst_sz == 1:
-                            self.text.append("    mov %al, %al")
-                        return dst_ty
-                else:
-                    # dst_ty > 8: data in %rdx is a pointer to the value
+                # For large aggregate types, return pointer to data
+                if dst_sz > 8:
                     self.text.append("    mov %rdx, %rax")
                     return dst_ty + '*'
+                # Generate conversion based on destination type
+                lbl = self.label_count
+                self.label_count += 1
+                # If tag matches destination tag, direct load
+                self.text.append(f"    cmp ${dst_tag}, %rax")
+                self.text.append(f"    je .Lany_direct_{lbl}")
+                # Handle mismatched tags
+                # Check for source INT (0)
+                self.text.append("    cmp $0, %rax")
+                self.text.append(f"    je .Lany_from_int_{lbl}")
+                # Check for source STRING (1)
+                self.text.append("    cmp $1, %rax")
+                self.text.append(f"    je .Lany_from_string_{lbl}")
+                # Check for source FLOAT (2)
+                self.text.append("    cmp $2, %rax")
+                self.text.append(f"    je .Lany_from_float_{lbl}")
+                # Unsupported tag: zero result
+                self.text.append("    xor %rax, %rax")
+                self.text.append(f"    jmp .Lany_done_{lbl}")
+                # Direct load: value is already of correct type
+                self.text.append(f".Lany_direct_{lbl}:")
+                if dst_ty.startswith('float'):
+                    if dst_ty == 'float<32>':
+                        self.text.append("    movd %edx, %xmm0")
+                    else:
+                        self.text.append("    movq %rdx, %xmm0")
+                else:
+                    self.text.append("    mov %rdx, %rax")
+                self.text.append(f"    jmp .Lany_done_{lbl}")
+                # From INT to other
+                self.text.append(f".Lany_from_int_{lbl}:")
+                if dst_ty.startswith('float'):
+                    self.text.append("    mov %rdx, %rax")
+                    if dst_ty == 'float<32>':
+                        self.text.append("    cvtsi2ss %rax, %xmm0")
+                    else:
+                        self.text.append("    cvtsi2sd %rax, %xmm0")
+                elif self._is_integer_type(dst_ty):
+                    self.text.append("    mov %rdx, %rax")
+                    sz = dst_sz
+                    if sz < 8:
+                        if sz == 4:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movslq %eax, %rax")
+                            else:
+                                self.text.append("    movl %eax, %eax")
+                        elif sz == 2:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movswq %ax, %rax")
+                            else:
+                                self.text.append("    movzwq %ax, %rax")
+                        elif sz == 1:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movsbq %al, %rax")
+                            else:
+                                self.text.append("    movzbq %al, %rax")
+                else:
+                    self.text.append("    xor %rax, %rax")
+                self.text.append(f"    jmp .Lany_done_{lbl}")
+                # From STRING to other
+                self.text.append(f".Lany_from_string_{lbl}:")
+                if self._is_integer_type(dst_ty):
+                    self.text.append("    mov %rdx, %rdi")
+                    self.text.append("    call atoll@PLT")
+                    sz = dst_sz
+                    if sz < 8:
+                        if sz == 4:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movslq %eax, %rax")
+                            else:
+                                self.text.append("    movl %eax, %eax")
+                        elif sz == 2:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movswq %ax, %rax")
+                            else:
+                                self.text.append("    movzwq %ax, %rax")
+                        elif sz == 1:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movsbq %al, %rax")
+                            else:
+                                self.text.append("    movzbq %al, %rax")
+                elif dst_ty.startswith('float'):
+                    self.text.append("    mov %rdx, %rdi")
+                    self.text.append("    call atof@PLT")
+                    if dst_ty == 'float<32>':
+                        self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                else:
+                    self.text.append("    xor %rax, %rax")
+                self.text.append(f"    jmp .Lany_done_{lbl}")
+                # From FLOAT to other
+                self.text.append(f".Lany_from_float_{lbl}:")
+                if dst_ty.startswith('float'):
+                    self.text.append("    movq %rdx, %xmm0")
+                    if dst_ty == 'float<32>':
+                        self.text.append("    cvtsd2ss %xmm0, %xmm0")
+                elif self._is_integer_type(dst_ty):
+                    self.text.append("    movq %rdx, %xmm0")
+                    self.text.append("    cvttsd2si %xmm0, %rax")
+                    sz = dst_sz
+                    if sz < 8:
+                        if sz == 4:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movslq %eax, %rax")
+                            else:
+                                self.text.append("    movl %eax, %eax")
+                        elif sz == 2:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movswq %ax, %rax")
+                            else:
+                                self.text.append("    movzwq %ax, %rax")
+                        elif sz == 1:
+                            if self._is_signed_type(dst_ty):
+                                self.text.append("    movsbq %al, %rax")
+                            else:
+                                self.text.append("    movzbq %al, %rax")
+                else:
+                    self.text.append("    xor %rax, %rax")
+                self.text.append(f"    jmp .Lany_done_{lbl}")
+                self.text.append(f".Lany_done_{lbl}:")
+                return dst_ty
             if dst_ty == 'any' and src_ty != 'any':
                 # Box the source value into any representation
                 tag_val = self._get_type_enum_value(src_ty)
@@ -3513,9 +3622,10 @@ __c5_str_replace:
             left = node[2]
             right = node[3]
             
-            # Check for typeop overload on left operand's type
+            # Check for typeop overload on left operand's type, but skip if we're currently generating that typeop (to avoid recursion)
             ty_l = self._get_expr_type(left)
-            if ty_l in self.typeops and op in self.typeops[ty_l]:
+            # Skip typeop expansion if we're currently generating that typeop to avoid recursion
+            if ty_l in self.typeops and op in self.typeops[ty_l] and (ty_l, op) not in self.active_typeops:
                 mangled_type = ty_l.replace('::', '_')
                 mangled_op = self._mangle_typeop_op(op)
                 func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"
@@ -4261,8 +4371,8 @@ __c5_str_replace:
                         self.uses_str_replace = True
                         return 'string'
                 
-                # Check for typeop method
-                if base_ty in self.typeops and method in self.typeops[base_ty]:
+                # Check for typeop method, but skip if we're currently generating that typeop (to avoid recursion)
+                if base_ty in self.typeops and method in self.typeops[base_ty] and (base_ty, method) not in self.active_typeops:
                     mangled_type = base_ty.replace('::', '_')
                     mangled_op = self._mangle_typeop_op(method)
                     func_name = f"__c5_typeop_{mangled_type}_{mangled_op}"

@@ -2,11 +2,7 @@ detect once;
 
 libinclude <str.a> #static
 
-type String {
-    string
-};
-
-typeop String == (string a, string b) {
+typeop string == (string a, string b) {
     if (a.length() != b.length()) {
         return 0;
     }
@@ -18,7 +14,7 @@ typeop String == (string a, string b) {
     return 1;
 }
 
-typeop String != (string a, string b) {
+typeop string != (string a, string b) {
     if (a.length() != b.length()) {
         return 1;
     }
@@ -30,7 +26,7 @@ typeop String != (string a, string b) {
     return 0;
 }
 
-typeop String.join(string str, string c) {
+typeop string.join(string str, string c) {
     return str + (string)c;
 }
 

@@ -31,6 +31,7 @@ class SemanticAnalyzer:
         self.ret_ty_stack = [] # Stack for tracking return types of nested functions/lambdas
         self.refined_types = {}  # For 'any' variables: maps variable name to its current refined type
         self.ternary_type_map = {}  # Stores resolved result type for ternary expressions
+        self.type_names = {'int', 'char', 'float', 'string', 'void', 'any'}  # Built-in primitive types
 
         # Built-in c5core::types enum for gettype
         self.enums['c5core::types'] = {
@@ -1181,7 +1182,7 @@ class SemanticAnalyzer:
             if op == '/' and right[0] == 'number' and str(right[1]) == '0': self.add_error("E004", loc=loc)
             ty_l = self._get_type(left)
             ty_r = self._get_type(right)
-            if ty_l == 'string' and op not in ('+', '-'): self.add_error("E017", op, loc)
+            if ty_l == 'string' and op not in ('+', '-') and op not in self.typeops.get('string', {}): self.add_error("E017", op, loc)
             if op in ('+', '-') and right[0] == 'number' and str(right[1]) == '0': self.add_warning("W004", loc=loc)
             # Type checking for bitwise and logical operators
             if op in ('&', '|', '^', '<<', '>>', '&&', '||'):
@@ -1833,8 +1834,8 @@ class SemanticAnalyzer:
             elif node[0] == 'typeop':
                 # node: ('typeop', type_name, op, params, body, loc)
                 type_name, op, params, body = node[1], node[2], node[3], node[4]
-                # Check that the type exists (must be a struct or type declaration)
-                if type_name not in self.structs and type_name not in self.types:
+                # Check that the type exists (struct, type alias, or built-in primitive)
+                if type_name not in self.type_names and type_name not in self.structs and type_name not in self.types:
                     self.add_error("E018", f"Type '{type_name}' not defined for typeop", loc)
                     continue
                 # Initialize typeop dict for this type if needed
