@@ -1,0 +1,17 @@
+include <std.c5h>
+
+void main() {
+    int a = 10;
+    int b = a;
+
+    delete a;
+
+    std::printf("%d\n", b);
+    // std::printf("%d\n", a); // this would give me an error because 'a' was deleted.
+
+    array<int<32>> mylist = {10, 20, 30};
+
+    foreach (i, val in mylist) std::printf("mylist[%d]: %d\n", i, val);
+
+    delete mylist;
+}

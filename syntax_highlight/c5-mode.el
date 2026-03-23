@@ -29,7 +29,7 @@
     "if" "else" "unless" "switch" "case" "default" "with" "as"
     "while" "do" "for" "foreach" "in" "break" "syscall"
     "return" "try" "catch" "struct" "enum" "signed" "unsigned"
-    "forstruct")
+    "forstruct" "delete")
   "Keywords for C5.")
 
 (defvar c5-constants
@@ -84,7 +84,7 @@
    '("\\<0x[0-9a-fA-F]+\\>" . font-lock-constant-face)
     ;; Operators and member access
     '("->\\|\\.\\|::" . font-lock-keyword-face)
-    '(":=\\|\\+\\+\\|--\\|\\+=\\|-=\\|\\*=\\|/=\\|%=\\|<<=\\|>>=\\|&=\\||=\\|\\^=\\|==\\|!=\\|<=\\|>=\\|&&\\|||\\|<<\\|>>\\|\\.\\.\\." . font-lock-comment-delimiter-face)
+    '(":=\\|\\+\\+\\|--\\|\\+=\\|-=\\|\\*=\\|/=\\|%=\\|<<=\\|>>=\\|&=\\||=\\|\\^=\\|==\\|!=\\|<=\\|>=\\|&&\\|\\|\\|\\|<<\\|>>\\|\\.\\.\\.\\|?" . font-lock-comment-delimiter-face)
     )
   "Font-lock keywords for `c5-mode'.")
 

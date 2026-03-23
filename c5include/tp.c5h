@@ -1,0 +1,35 @@
+// Type library because why not.
+
+detect once;
+
+type u8 {
+    unsigned int<8>
+};
+
+type i8 {
+    int<8>
+};
+
+type u16 {
+    unsigned int<16>
+};
+
+type i16 {
+    int<16>
+};
+
+type u32 {
+    unsigned int<32>
+};
+
+type i32 {
+    int<32>
+};
+
+type u128 {
+    unsigned int<128>
+};
+
+type i128 {
+    int<128>
+};

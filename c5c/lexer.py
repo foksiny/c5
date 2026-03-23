@@ -32,6 +32,7 @@ def lex(code):
         ('TRY',       r'try\b'),
         ('CATCH',     r'catch\b'),
         ('DETECT',    r'detect\b'),
+        ('DELETE',    r'delete\b'),
         ('ONCE',      r'once\b'),
         ('WHILE',     r'while\b'),
         ('FOR',       r'for\b'),

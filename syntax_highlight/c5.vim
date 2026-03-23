@@ -8,7 +8,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword c5Keyword let const macro type typeop fnct as syscall forstruct gettype forstruct
+syn keyword c5Keyword let const macro type typeop fnct as syscall forstruct gettype forstruct delete
 syn keyword c5Include include libinclude
 syn match c5PreProc "\v#[a-zA-Z_]+"
 syn keyword c5Conditional if else unless switch case default with
@@ -30,7 +30,7 @@ syn region c5ParameterizedType start="\v[a-zA-Z_][a-zA-Z0-9_]*\<" end="\v\>" con
 " Namespaces and Operators
 syn match c5Namespace "\v[a-zA-Z_][a-zA-Z0-9_]*::"
 syn match c5Operator "\v\:="
-syn match c5Operator "\v\.\.\."
+syn match c5Operator "\v\?\|\.\.\."
 syn match c5Operator "\v-\>"
 syn match c5Operator "\v\."
 syn match c5Operator "\v\+\=|\-\=|\*\=|\/\=|\%\=|\&\=|\^=|\|\=|\<\<\=|\>\>\="

@@ -601,6 +601,13 @@ class Parser:
         
         return ('try_catch_stmt', try_body, catch_param, catch_body, loc)
 
+    def parse_delete_stmt(self):
+        loc = self._loc()
+        self.consume('DELETE')
+        var_name = self.consume('ID').value
+        self.consume('SEMI')
+        return ('delete_stmt', var_name, loc)
+
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
@@ -624,6 +631,8 @@ class Parser:
             return self.parse_break_stmt()
         if self.peek().type == 'TRY':
             return self.parse_try_catch_stmt()
+        if self.peek().type == 'DELETE':
+            return self.parse_delete_stmt()
         
         loc = self._loc()
         is_decl = False

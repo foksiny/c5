@@ -32,6 +32,7 @@ class SemanticAnalyzer:
         self.refined_types = {}  # For 'any' variables: maps variable name to its current refined type
         self.ternary_type_map = {}  # Stores resolved result type for ternary expressions
         self.type_names = {'int', 'char', 'float', 'string', 'void', 'any'}  # Built-in primitive types
+        self.deleted_vars = set()  # Track deleted variables
 
         # Built-in c5core::types enum for gettype
         self.enums['c5core::types'] = {
@@ -88,6 +89,7 @@ class SemanticAnalyzer:
             "E042": ("Const Violation", "Cannot modify a const variable."),
             "E023": ("Integer Overflow", "Integer literal exceeds the range of the target type."),
             "E043": ("Invalid 'any' type usage", "The 'any' type can only be used in function parameters."),
+            "E044": ("Use of deleted variable", "Cannot use a variable that has been deleted."),
         }
 
         self.warning_db = {
@@ -1397,7 +1399,12 @@ class SemanticAnalyzer:
                 if name in scope:
                     found = True
                     break
-            if not found: self.add_error("E001", name, loc)
+            if not found:
+                # Check if variable was deleted
+                if name in self.deleted_vars:
+                    self.add_error("E044", name, loc)
+                else:
+                    self.add_error("E001", name, loc)
             else: self.used_vars.add(name)
         
         elif tag == 'namespace_access':
@@ -1719,6 +1726,28 @@ class SemanticAnalyzer:
             # Node structure: ('try_catch_stmt', try_body, catch_param, catch_body, errors, loc)
             # After _strip_loc, loc will be removed, leaving errors as the last element
             return ('try_catch_stmt', new_try_body, catch_param, new_catch_body, try_errors, loc)
+        
+        elif tag == 'delete_stmt':
+            # delete_stmt: ('delete_stmt', var_name, loc)
+            var_name = node[1]
+            loc = node[2]
+            
+            # Find the variable in scope and mark it as deleted
+            var_found = False
+            for scope in reversed(self.scopes):
+                if var_name in scope:
+                    var_found = True
+                    # Mark variable as deleted
+                    self.deleted_vars.add(var_name)
+                    # Remove from scope so it can't be accessed
+                    del scope[var_name]
+                    break
+            
+            if not var_found:
+                self.add_error("E001", var_name, loc)
+            
+            # Return the node unchanged (for codegen)
+            return node
             
         elif tag == 'lambda':
             # Lambda expression: create a new scope for parameters and analyze body

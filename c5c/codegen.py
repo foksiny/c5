@@ -1422,6 +1422,55 @@ __c5_str_replace:
                         else: self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
         elif node[0] == 'try_catch_stmt':
             self.gen_try_catch(node)
+        elif node[0] == 'delete_stmt':
+            # delete_stmt: ('delete_stmt', var_name, loc)
+            var_name = node[1]
+            
+            # Check if it's a local variable
+            if var_name in self.local_vars:
+                var_info = self.local_vars[var_name]
+                ty = var_info[1]
+                offset = var_info[0]
+                
+                # If it's an array type, free the allocated memory
+                if ty.startswith('array<'):
+                    # Load the pointer (first 8 bytes of the array struct)
+                    self.text.append(f"    mov {offset}(%rbp), %rdi")
+                    # Check if pointer is not null
+                    self.text.append("    cmp $0, %rdi")
+                    self.text.append("    je .Ldelete_skip_free")
+                    # Call free to release memory
+                    self.text.append("    call free@PLT")
+                    self.text.append(".Ldelete_skip_free:")
+                    # Zero out the array to indicate it's deleted
+                    # array<T> is 24 bytes: ptr(8) + len(8) + cap(8)
+                    self.text.append(f"    movq $0, {offset}(%rbp)")
+                    self.text.append(f"    movq $0, {offset+8}(%rbp)")
+                    self.text.append(f"    movq $0, {offset+16}(%rbp)")
+                else:
+                    # For simple types, just zero them out
+                    sz = self.sizeof(ty)
+                    if sz == 1:
+                        self.text.append(f"    movb $0, {offset}(%rbp)")
+                    elif sz == 2:
+                        self.text.append(f"    movw $0, {offset}(%rbp)")
+                    elif sz == 4:
+                        self.text.append(f"    movl $0, {offset}(%rbp)")
+                    elif sz == 8:
+                        self.text.append(f"    movq $0, {offset}(%rbp)")
+                    else:
+                        # For larger types, use memset
+                        self.text.append(f"    lea {offset}(%rbp), %rdi")
+                        self.text.append("    xor %rsi, %rsi")
+                        self.text.append(f"    mov ${sz}, %rdx")
+                        self.text.append("    call memset@PLT")
+            elif var_name in self.global_vars:
+                # For global variables, we'd need similar handling
+                # For now, just pass (global arrays are rare)
+                pass
+            # Remove from local_vars so it can't be accessed again
+            if var_name in self.local_vars:
+                del self.local_vars[var_name]
         elif node[0] == 'return_stmt':
             self.func_has_return = True
             if node[1]:

@@ -16,6 +16,7 @@ C5 is a high-performance, statically-typed programming language that compiles di
 - **Automatic Namespacing**: Included headers (like `std.c5h`) are partitioned into namespaces to avoid symbol clobbering.
 - **Smart String Handling**: Native support for string concatenation (`+`) and substring removal (`-`).
 - **Pointer Arithmetic**: Full support for raw memory manipulation with automatic type scaling.
+- **Manual Memory Management**: Use `delete` to explicitly free variables and release memory.
 - **Modern CLI**: Compile to executables with `-o`, inspect assembly with `-S`, or analyze for errors with `-a`.
 
 ## 🛠️ Getting Started
@@ -1374,7 +1375,7 @@ void main() {
 
 ### 16. Pointers & Memory
 C5 provides full access to memory with C-like syntax.
-```c
+```c5
 include <std.c5h>
 
 void main() {
@@ -1387,6 +1388,46 @@ void main() {
     *(arr + 1) = 50; 
     std::free(arr);
 }
+```
+
+### 17. Manual Memory Management (`delete`)
+C5 provides a `delete` statement for manual memory management, allowing you to explicitly free variables and release memory resources. This is useful for cleaning up large data structures or when you need fine-grained control over memory lifecycle.
+
+```c5
+include <std.c5h>
+
+void main() {
+    // Declare and use a variable
+    int a = 10;
+    int b = a;
+    
+    // Delete the variable - frees its memory and prevents further access
+    delete a;
+    
+    // Using 'b' is still valid since it's a separate variable
+    std::printf("%d\n", b);  // Output: 10
+    
+    // Using 'a' here would cause a compile error (E044 - Use of deleted variable)
+    
+    // Delete also works with dynamic arrays
+    array<int<32>> mylist = {10, 20, 30};
+    
+    foreach (i, val in mylist) {
+        std::printf("mylist[%d]: %d\n", i, val);
+    }
+    
+    // Delete frees the allocated memory and zeros out the array
+    delete mylist;
+}
+```
+
+**Key behaviors:**
+- **Simple types** (int, float, char, etc.): The variable is zeroed out to prevent stale data usage
+- **Dynamic arrays** (`array<T>`): The allocated heap memory is freed using `free()`, and the array is zeroed
+- **Deleted variable access**: Attempting to use a deleted variable results in compile error `E044`
+- **Scope**: Variables are deleted from the current scope; they cannot be accessed after deletion
+
+**Note**: The `delete` statement is optional - C5 has garbage collection for dynamically allocated arrays. However, `delete` provides manual garbage collection for scenarios where explicit memory management is beneficial.
 ```
 
 ### 17. Public Variables (Globals)

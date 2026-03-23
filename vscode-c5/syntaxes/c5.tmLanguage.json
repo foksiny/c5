@@ -29,12 +29,12 @@
              "patterns": [
                  {
                      "name": "keyword.control.c5",
-                     "match": "\\b(if|unless|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch|forstruct)\\b"
+                     "match": "\\b(if|unless|else|switch|case|default|while|do|for|foreach|in|break|return|with|try|catch|forstruct|delete)\\b"
                  },
                  {
                      "name": "keyword.other.c5",
                      "match": "\\b(let|const|macro|type|typeop|fnct|as|syscall|sizeof|gettype)\\b"
-                 },
+                },
                 {
                      "name": "keyword.control.directive.c5",
                      "match": "\\b(include|libinclude|detect|once)\\b"
@@ -97,7 +97,7 @@
         },
         "operators": {
             "patterns": [
-                { "name": "keyword.operator.c5", "match": ":=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\^=|\\|=|<<=|>>=|==|!=|<=|>=|&&|\\|\\||<<|>>|->|\\.\\.\\.|[\\+\\-\\*/%=\\!<>\\&\\|\\^\\~\\.]" }
+                { "name": "keyword.operator.c5", "match": ":=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\^=|\\|=|<<=|>>=|==|!=|<=|>=|&&|\\|\\||<<|>>|->|\\.\\.\\.|\\?|[\\+\\-\\*/%=\\!<>\\&\\|\\^\\~\\.]" }
             ]
         },
         "functions": {
