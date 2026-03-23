@@ -55,13 +55,57 @@ let const int RAND_MAX = 2147483647;
 type time_t {
     int,
     int<128>,
+    int<32>,
     float
 };
 
-int<32> time(time_t* t);
+time_t time(time_t* t);
 void* localtime(time_t* t);
-int<32> mktime(void* t);
+time_t mktime(void* t);
 void* gmtime(time_t* t);
-int<32> difftime(time_t t1, time_t t2);
-int<32> strftime(string s, int<32> maxsize, string format, void* t);
-int<32> strptime(string s, string format, void* t);
+time_t difftime(time_t t1, time_t t2);
+time_t strftime(string s, int<32> maxsize, string format, void* t);
+time_t strptime(string s, string format, void* t);
+
+type size_t {
+    unsigned int,
+    unsigned int<128>
+};
+
+type ssize_t {
+    int
+};
+
+type pid_t {
+    int<32>,
+    int,
+    int<128>
+};
+
+type useconds_t {
+    unsigned int<32>
+};
+
+type mode_t {
+    unsigned int<32>
+};
+
+// unistd.h
+unsigned int<32> sleep(unsigned int<32> seconds);
+int<32> usleep(useconds_t usec);
+int<32> open(const char *pathname, int<32> flags, mode_t mode);
+ssize_t read(int<32> fd, void *buf, size_t count);
+ssize_t write(int<32> fd, const void *buf, size_t count);
+int<32> close(int<32> fd);
+int<32> chdir(const char *path);
+char *getcwd(char *buf, size_t size);
+int<32> access(const char *pathname, int<32> mode);
+pid_t fork();
+pid_t getpid();
+pid_t getppid();
+int<32> execve(const char *pathname, const char **argv, const char **envp);
+int<32> pipe(int<32> *pipefd);
+int<32> unlink(const char *pathname);
+int<32> rmdir(const char *pathname);
+int<32> dup(int<32> oldfd);
+int<32> dup2(int<32> oldfd, int<32> newfd);
