@@ -12,7 +12,7 @@ syn keyword c5Keyword let const macro type typeop fnct as syscall forstruct gett
 syn keyword c5Include include libinclude
 syn match c5PreProc "\v#[a-zA-Z_]+"
 syn keyword c5Conditional if else unless switch case default with
-syn keyword c5Repeat while do for foreach in break
+syn keyword c5Repeat while do for foreach forever in break
 syn keyword c5Statement return try catch
 syn keyword c5Structure struct enum
 syn keyword c5Type void int float char string array signed unsigned any

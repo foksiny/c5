@@ -38,6 +38,7 @@ def lex(code):
         ('FOR',       r'for\b'),
         ('FOREACH',   r'foreach\b'),
         ('FORSTRUCT', r'forstruct\b'),
+        ('FOREVER',   r'forever\b'),
         ('WITH',      r'with\b'),
         ('IN',        r'in\b'),
         ('AS',        r'as\b'),

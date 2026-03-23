@@ -502,6 +502,13 @@ class Parser:
         self.consume('SEMI')
         return ('do_while_stmt', body, cond, loc)
 
+    def parse_forever_stmt(self):
+        loc = self._loc()
+        self.consume('FOREVER')
+        body = self._parse_body_or_single()
+        # forever is equivalent to while(true) - it's an infinite loop
+        return ('forever_stmt', body, loc)
+
     def parse_for_stmt(self):
         loc = self._loc()
         self.consume('FOR')
@@ -627,6 +634,8 @@ class Parser:
             return self.parse_forstruct_stmt()
         if self.peek().type == 'DO':
             return self.parse_do_while_stmt()
+        if self.peek().type == 'FOREVER':
+            return self.parse_forever_stmt()
         if self.peek().type == 'BREAK':
             return self.parse_break_stmt()
         if self.peek().type == 'TRY':

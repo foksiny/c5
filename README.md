@@ -777,6 +777,8 @@ C5 supports standard C control structures:
 - `do` / `while` loops
 - `for` loops
 - `foreach` loops (for iterating over arrays)
+- `forever` loops (infinite loops)
+- `switch` / `case`
 
 ```c
 for (int i = 0; i < 10; i = i + 1) {
@@ -926,7 +928,7 @@ default:
 
 #### Break Statement
 
-The `break` statement terminates the execution of the innermost enclosing loop (`for`, `while`, `do-while`, `foreach`) or `switch` statement. It transfers control to the statement immediately following the loop or switch.
+The `break` statement terminates the execution of the innermost enclosing loop (`for`, `while`, `do-while`, `foreach`, `forever`) or `switch` statement. It transfers control to the statement immediately following the loop or switch.
 
 ```c
 for (int i = 0; i < 10; i = i + 1) {
@@ -937,6 +939,37 @@ for (int i = 0; i < 10; i = i + 1) {
 ```
 
 **Note:** `break` is only allowed inside loops or a switch. Using `break` elsewhere will cause a compile-time error.
+
+#### Forever Statement
+
+The `forever` statement creates an infinite loop that runs until a `break` statement exits it. It is equivalent to `while(true)` but with cleaner syntax.
+
+**Syntax:**
+```c5
+forever {
+    // body executes infinitely
+}
+```
+
+**Example:**
+```c5
+include <std.c5h>
+
+void main() {
+    int<32> i = 0;
+
+    forever {
+        std::printf("i: %d\n", i);
+        i++;
+
+        unless (i < 10) {
+            break;  // Exit the infinite loop when condition is met
+        }
+    }
+}
+```
+
+**Note:** Since `forever` creates an infinite loop, ensure you have a `break` condition to avoid an endless program. Use `break` inside the loop body to exit.
 
 #### Compound Assignment Operators
 

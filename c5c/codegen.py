@@ -1581,6 +1581,20 @@ __c5_str_replace:
             self.text.append("    cmp $0, %rax")
             self.text.append(f"    jne {start_label}")
             self.text.append(f"{end_label}:")
+        elif node[0] == 'forever_stmt':
+            body = node[1]
+            self.label_count += 1
+            start_label = f".Lforever_start_{self.label_count}"
+            end_label = f".Lforever_end_{self.label_count}"
+            
+            # forever is an infinite loop - just jump to start
+            self.text.append(f"{start_label}:")
+            self.break_targets.append(end_label)
+            for stmt in body:
+                self.gen_stmt(stmt)
+            self.break_targets.pop()
+            self.text.append(f"    jmp {start_label}")
+            self.text.append(f"{end_label}:")
         elif node[0] == 'for_stmt':
             init, cond, inc, body = node[1], node[2], node[3], node[4]
             self.label_count += 1

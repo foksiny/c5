@@ -1,0 +1,14 @@
+include <std.c5h>
+
+void main() {
+    int<32> i = 0;
+
+    forever {
+        std::printf("i: %d\n", i);
+        i++;
+
+        unless (i < 10) {
+            break;
+        }
+    }
+}
