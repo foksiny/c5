@@ -34,6 +34,7 @@ def lex(code):
         ('DETECT',    r'detect\b'),
         ('DELETE',    r'delete\b'),
         ('ONCE',      r'once\b'),
+        ('DEFER',     r'defer\b'),
         ('WHILE',     r'while\b'),
         ('FOR',       r'for\b'),
         ('FOREACH',   r'foreach\b'),

@@ -29,7 +29,7 @@
     "if" "else" "unless" "switch" "case" "default" "with" "as"
     "while" "do" "for" "foreach" "forever" "in" "break" "syscall"
     "return" "try" "catch" "struct" "enum" "signed" "unsigned"
-    "forstruct" "delete")
+    "forstruct" "delete" "defer")
   "Keywords for C5.")
 
 (defvar c5-constants

@@ -615,6 +615,25 @@ class Parser:
         self.consume('SEMI')
         return ('delete_stmt', var_name, loc)
 
+    def parse_defer_stmt(self):
+        loc = self._loc()
+        self.consume('DEFER')
+        
+        # Check for block form: defer { ... };
+        if self.peek().type == 'LBRACE':
+            self.consume('LBRACE')
+            body = []
+            while self.peek().type != 'RBRACE':
+                body.append(self.parse_stmt())
+            self.consume('RBRACE')
+            self.consume('SEMI')
+            return ('defer_stmt', body, loc)
+        else:
+            # Single expression defer: defer expr;
+            expr = self.parse_expr()
+            self.consume('SEMI')
+            return ('defer_stmt', expr, loc)
+
     def parse_stmt(self):
         if self.peek().type == 'IF':
             return self.parse_if_stmt()
@@ -642,6 +661,8 @@ class Parser:
             return self.parse_try_catch_stmt()
         if self.peek().type == 'DELETE':
             return self.parse_delete_stmt()
+        if self.peek().type == 'DEFER':
+            return self.parse_defer_stmt()
         
         loc = self._loc()
         is_decl = False

@@ -1748,6 +1748,23 @@ class SemanticAnalyzer:
             
             # Return the node unchanged (for codegen)
             return node
+        
+        elif tag == 'defer_stmt':
+            # defer_stmt: ('defer_stmt', body_or_expr, loc)
+            # body_or_expr can be a list of statements (block form) or a single expression
+            body_or_expr = node[1]
+            loc = node[2]
+            
+            if isinstance(body_or_expr, list):
+                # Block form: defer { ... };
+                for stmt in body_or_expr:
+                    self._analyze_node(stmt)
+            else:
+                # Single expression form: defer expr;
+                self._analyze_node(body_or_expr)
+            
+            # Return the node unchanged (for codegen)
+            return node
             
         elif tag == 'lambda':
             # Lambda expression: create a new scope for parameters and analyze body

@@ -17,6 +17,7 @@ C5 is a high-performance, statically-typed programming language that compiles di
 - **Smart String Handling**: Native support for string concatenation (`+`) and substring removal (`-`).
 - **Pointer Arithmetic**: Full support for raw memory manipulation with automatic type scaling.
 - **Manual Memory Management**: Use `delete` to explicitly free variables and release memory.
+- **Defer Statements**: Schedule code to run automatically when the scope exits (LIFO order).
 - **Modern CLI**: Compile to executables with `-o`, inspect assembly with `-S`, or analyze for errors with `-a`.
 
 ## 🛠️ Getting Started
@@ -58,6 +59,9 @@ c5c main.c5 --debug
 # Compile, run, and delete the executable (minimal output)
 c5c main.c5 -r
 c5c main.c5 --run
+
+# Compile, run, and delete with arguments to the program (use -- to separate)
+c5c main.c5 -r -- arg1 arg2
 ```
 
 ## 📚 Library System
@@ -1830,7 +1834,81 @@ void main() {
 
 ---
 
-### 23. Type Width Checking
+### 23. Defer Statements
+
+C5 supports `defer` statements to schedule code to run automatically when the current scope exits. This is useful for cleanup code, resource release, or any action that must happen regardless of how the function exits (normal return, early return, or reaching the end of the function).
+
+#### Syntax
+
+```c5
+defer expression;           // Single expression
+defer { statement1; statement2; };  // Block form
+```
+
+#### Features
+
+- **LIFO Order**: If multiple `defer` statements are in scope, they execute in Last-In-First-Out order (the last defer registered runs first).
+- **Function-level Scope**: Defers are scoped to the function - they run when the function returns, either normally or via early return.
+- **Both Forms**: Supports single expression (`defer expr;`) and block form (`defer { ... };`).
+
+#### Examples
+
+**Single Expression Defer:**
+```c5
+include <std.c5h>
+
+void main() {
+    array<int<32>> arr = {10, 20, 30};
+    
+    std::printf("Array length before defer: %zu\n", arr.length());
+    
+    defer arr.clear();  // Runs when main() exits
+    
+    std::printf("Array length after defer (before exit): %zu\n", arr.length());
+}
+// arr.clear() runs here automatically
+```
+
+**Block Defer:**
+```c5
+include <std.c5h>
+
+void main() {
+    array<int<32>> arr = {1, 2, 3};
+    
+    defer {
+        arr.clear();
+        std::printf("Cleanup complete\n");
+    };
+    
+    std::printf("Array length: %zu\n", arr.length());
+}
+// Block defer runs in reverse order
+```
+
+**Multiple Defers (LIFO Order):**
+```c5
+include <std.c5h>
+
+void main() {
+    int<32> counter = 0;
+    
+    defer { counter = counter + 1; std::printf("Defer 1\n"); };
+    defer { counter = counter + 10; std::printf("Defer 2\n"); };
+    defer { counter = counter + 100; std::printf("Defer 3\n"); };
+    
+    std::printf("Counter before exit: %d\n", counter);
+}
+// Output:
+// Counter before exit: 0
+// Defer 3   (runs first - added last)
+// Defer 2
+// Defer 1   (runs last - added first)
+```
+
+---
+
+### 25. Type Width Checking
 
 C5 performs compile-time checks to ensure that integer and floating-point literals fit within the specified bit width of the target type.
 
@@ -1864,7 +1942,7 @@ These checks help prevent accidental overflow and data loss.
 
 ---
 
-### 24. Operators
+### 25. Operators
 
 C5 supports a comprehensive set of operators for arithmetic, bitwise, logical, and comparison operations. All operators follow C-like precedence and associativity.
 
@@ -1955,7 +2033,7 @@ void main() {
 }
 ```
 
-### 25. Type Conversions (Casts)
+### 26. Type Conversions (Casts)
 
 C5 supports explicit type conversions (casts) using the syntax `(target_type) expression`. Casts allow you to convert a value from one type to another, overriding the compiler's default type checking.
 
@@ -2018,7 +2096,7 @@ void main() {
 - The compiler will still perform some checks (e.g., ensuring the target type is known).
 - For narrowing conversions (e.g., `int<64>` to `int<8>`), the value is truncated according to the target type's signedness.
 
-### 26. Syscall Built-in
+### 27. Syscall Built-in
 
 C5 provides a built-in `syscall` function to perform direct system calls on x86_64 Linux.
 
@@ -2042,7 +2120,7 @@ void main() {
 }
 ```
 
-### 27. Type Operations (Operator Overloading and Methods)
+### 28. Type Operations (Operator Overloading and Methods)
 
 C5 supports user-defined operator overloading and method definitions through the `typeop` keyword. This allows you to define custom behavior for operators and add methods to your own types.
 

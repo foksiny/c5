@@ -28,6 +28,7 @@ class CodeGen:
         self.break_targets = []  # Stack of break jump targets (for loops and switches)
         self.try_errors_map = try_errors_map or {}  # Map from try_catch loc to list of errors
         self.catch_param_counter = 0  # For generating unique catch parameter names
+        self.defer_stack = []  # Stack to track deferred statements (for defer feature)
         self.int_format_label = None  # For integer-to-string conversion format
         self._current_ast = [] # Current AST being generated
         self.func_has_return = False # Track if function has return
@@ -1033,6 +1034,7 @@ __c5_str_replace:
         self.local_var_offset = 0
         self.current_func_ret_ty = ty  # Store return type for struct returns
         self.func_has_return = False  # Track if function has a return statement
+        self.defer_stack = []  # Reset defer stack for this function
         
         if name in self.weak_symbols:
             self.text.append(f".weak {mangled_name}")
@@ -1204,6 +1206,8 @@ __c5_str_replace:
         for stmt in body:
             self.gen_stmt(stmt)
 
+        # Run any remaining deferred statements at the end of the function
+        self.gen_deferred_stmts()
             
         # Only add default return if no return statement was generated
         if not self.func_has_return:
@@ -1422,6 +1426,11 @@ __c5_str_replace:
                         else: self.text.append(f"    mov %rax, {self.local_var_offset}(%rbp)")
         elif node[0] == 'try_catch_stmt':
             self.gen_try_catch(node)
+        elif node[0] == 'defer_stmt':
+            # defer_stmt: ('defer_stmt', body_or_expr, loc)
+            # Instead of generating code immediately, add to defer stack
+            body_or_expr = node[1]
+            self.defer_stack.append(body_or_expr)
         elif node[0] == 'delete_stmt':
             # delete_stmt: ('delete_stmt', var_name, loc)
             var_name = node[1]
@@ -1473,6 +1482,8 @@ __c5_str_replace:
                 del self.local_vars[var_name]
         elif node[0] == 'return_stmt':
             self.func_has_return = True
+            # Run deferred statements before returning
+            self.gen_deferred_stmts()
             if node[1]:
                 ret_expr = node[1]
                 # Check if we're returning an array variable
@@ -2008,6 +2019,20 @@ __c5_str_replace:
                     
             self.text.append(f"{end_label}:")
 
+    def gen_deferred_stmts(self):
+        """Generate code for all deferred statements in reverse order (LIFO)."""
+        # Generate deferred statements in reverse order
+        while self.defer_stack:
+            deferred = self.defer_stack.pop()
+            if isinstance(deferred, list):
+                # Block form: defer { stmt1; stmt2; ... };
+                for stmt in reversed(deferred):
+                    self.gen_stmt(stmt)
+            else:
+                # Single expression form: defer expr;
+                # Generate the expression as a statement
+                self.gen_expr(deferred)
+    
     def gen_try_catch(self, node):
         # node structure: ('try_catch_stmt', try_body, catch_param, catch_body, loc)
         try_body = node[1]

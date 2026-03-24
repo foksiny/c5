@@ -57,6 +57,18 @@ def main():
     parser.add_argument("--build", nargs="?", const="build.c5b", help="Build project using a build file (.c5b)")
     parser.add_argument("-a", "--analyze", action="store_true", help="Analyze source files for errors and warnings without compiling")
     parser.add_argument("-d", "--debug", action="store_true", help="Compile and debug the executable, showing crash details if it fails")
+    # Handle -- separator for -r mode BEFORE parsing
+    # This allows passing arguments to the compiled program after --
+    if "--" in sys.argv:
+        # Find the position of --
+        sep_idx = sys.argv.index("--")
+        # Everything after -- are arguments to the program (save for later)
+        prog_args = sys.argv[sep_idx + 1:]
+        # Remove -- and everything after it from sys.argv for parsing
+        sys.argv = sys.argv[:sep_idx]
+    else:
+        prog_args = []
+
     parser.add_argument("-r", "--run", action="store_true", help="Compile, run, and delete the executable (minimal output)")
     
     args = parser.parse_args()
@@ -462,8 +474,8 @@ def main():
         
         # Run mode: compile, run, and delete without verbose output
         if args.run:
-            # Execute the program
-            result = subprocess.run([final_out], capture_output=False)
+            # Execute the program with any passed arguments
+            result = subprocess.run([final_out] + prog_args, capture_output=False)
             exit_code = result.returncode
             
             # Delete the executable after running

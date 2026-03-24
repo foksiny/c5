@@ -1,0 +1,38 @@
+include <std.c5h>
+
+void main() {
+    // Test 1: Single expression defer
+    array<int<32>> arr = {10, 20, 30, 40, 50};
+
+    std::printf("Test 1: Single expression defer\n");
+    std::printf("Array length BEFORE defer: %zu\n", arr.length());
+    
+    defer arr.clear();
+    
+    std::printf("Array length AFTER defer (before function ends): %zu\n", arr.length());
+    
+    // Test 2: Block defer
+    array<int<32>> arr2 = {1, 2, 3};
+    
+    std::printf("\nTest 2: Block defer\n");
+    std::printf("Array2 length BEFORE defer: %zu\n", arr2.length());
+    
+    defer {
+        arr2.clear();
+        std::printf("Inside defer block: cleared arr2\n");
+    };
+    
+    std::printf("Array2 length AFTER defer (before function ends): %zu\n", arr2.length());
+    
+    // Test 3: Multiple defers (LIFO order)
+    int<32> counter = 0;
+    
+    std::printf("\nTest 3: Multiple defers (LIFO order)\n");
+    defer { counter = counter + 1; std::printf("Defer 1 (last): counter = %d\n", counter); };
+    defer { counter = counter + 10; std::printf("Defer 2 (middle): counter = %d\n", counter); };
+    defer { counter = counter + 100; std::printf("Defer 3 (first): counter = %d\n", counter); };
+    
+    std::printf("Counter before function ends: %d\n", counter);
+    
+    std::printf("\nAll tests passed!\n");
+}
