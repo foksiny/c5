@@ -18,6 +18,7 @@ C5 is a high-performance, statically-typed programming language that compiles di
 - **Pointer Arithmetic**: Full support for raw memory manipulation with automatic type scaling.
 - **Manual Memory Management**: Use `delete` to explicitly free variables and release memory.
 - **Defer Statements**: Schedule code to run automatically when the scope exits (LIFO order).
+- **No Main Required**: Use `#nomain;` to skip writing a `main()` function - the compiler auto-generates a minimal `void main() {}` for you.
 - **Modern CLI**: Compile to executables with `-o`, inspect assembly with `-S`, or analyze for errors with `-a`.
 
 ## 🛠️ Getting Started
@@ -62,6 +63,65 @@ c5c main.c5 --run
 
 # Compile, run, and delete with arguments to the program (use -- to separate)
 c5c main.c5 -r -- arg1 arg2
+```
+
+## 🎯 The `#nomain;` Directive
+
+The `#nomain;` directive tells the compiler that this source file does not define a `main()` function, and the compiler should automatically generate a minimal one for you. This allows you to write small programs or utility files without the boilerplate of an empty `main()`.
+
+### Usage
+
+At the top of your C5 file, add:
+
+```c5
+#nomain;
+
+include <std.c5h>
+
+// Your code here - you can define functions, variables, etc.
+// No need to write a main() function!
+
+int add(int a, int b) {
+    return a + b;
+}
+
+void some_init() {
+    // initialization code
+}
+```
+
+When compiled, the compiler will implicitly add:
+
+```c5
+void main() {}
+```
+
+If you define your own `main()` in the same file, the compiler will use yours instead of auto-generating one.
+
+### When to Use
+
+- **Quick scripts**: Small utility programs where you don't need a main function.
+- **Single-function demos**: Focus on a specific function without boilerplate.
+- **Educational examples**: Show core language features without extra code.
+
+### Behavior
+
+- The auto-generated `main` returns `0` and does nothing else.
+- If your file defines `main`, that takes precedence.
+- Works with the `--analyze` mode - analysis will pass without E009 (missing entry point) error.
+- Does NOT make the file a library; it's still compiled as a normal executable.
+
+Example:
+
+```c5
+#nomain;
+
+include <std.c5h>
+
+void main() {
+    // This main overrides the auto-generated one
+    std::printf("Hello!\\n");
+}
 ```
 
 ## 📚 Library System

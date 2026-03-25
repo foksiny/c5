@@ -215,6 +215,10 @@ def _namespace_types_in_node(node, namespace):
         
     return tuple(l)
 
+def _has_nomain_directive(ast):
+    """Check if AST contains a #nomain; directive."""
+    return any(isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'nomain' for node in ast)
+
 def _process_includes(ast, dir_path, include_paths, global_path, processed_files=None, use_namespaces=True, current_file_path=None):
     if processed_files is None:
         processed_files = set()
@@ -322,6 +326,9 @@ def compile_file(filepath, include_paths=None, is_library=False):
     dir_path = os.path.dirname(os.path.abspath(filepath))
     global_path = os.path.expanduser("~/.c5/include")
     
+    # Check for #nomain directive in the primary file before include processing
+    has_nomain = _has_nomain_directive(ast)
+    
     new_ast, library_funcs, library_vars, lib_includes, weak_symbols = _process_includes(
         ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
     )
@@ -335,12 +342,30 @@ def compile_file(filepath, include_paths=None, is_library=False):
     
     # Libincludes already collected during include processing
     final_ast = pre_ast
+    
+    # If #nomain directive is present and no main function exists, auto-generate one
+    if has_nomain:
+        # Check if main is defined in the AST
+        has_main = any(isinstance(node, tuple) and node[0] == 'func' and node[2] == 'main' for node in final_ast)
+        if not has_main:
+            # Auto-generate: void main() {}
+            # Use location from the #nomain directive if available, else (1, 0)
+            nomain_loc = (1, 0)
+            for node in final_ast:
+                if isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'nomain':
+                    nomain_loc = node[3] if len(node) > 3 else (1, 0)
+                    break
+            synthetic_main = ('func', 'void', 'main', [], [], nomain_loc)
+            final_ast.append(synthetic_main)
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
     analyzer.library_funcs = library_funcs
     analyzer.library_vars = library_vars
-    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
+    # If file is a library (--lib flag), don't require main. Otherwise, require it.
+    # Note: with #nomain we've auto-generated main if needed, so require_main is just is_library check
+    require_main = not is_library
+    analyzer.analyze(final_ast, require_main=require_main, show_warnings=not is_library)
 
     # Strip location info before passing to optimizer/codegen
     stripped_ast = _strip_loc(final_ast)
@@ -371,6 +396,13 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     lib_includes = []      # Collect library linking directives
     use_namespaces = True
     processed_files = set()
+    
+    # Check if primary file has #nomain directive
+    primary_code = open(primary_file).read()
+    primary_tokens = lex(primary_code)
+    primary_parser = Parser(primary_tokens)
+    primary_ast = primary_parser.parse_program()
+    has_nomain = _has_nomain_directive(primary_ast)
     
     for filepath in filepaths:
         code = open(filepath).read()
@@ -444,12 +476,29 @@ def compile_files(filepaths, include_paths=None, is_library=False):
     
     # Libincludes already collected during include processing
     final_ast = pre_ast
+    
+    # If #nomain directive is present and no main function exists, auto-generate one
+    if has_nomain:
+        # Check if main is defined in the AST
+        has_main = any(isinstance(node, tuple) and node[0] == 'func' and node[2] == 'main' for node in final_ast)
+        if not has_main:
+            # Auto-generate: void main() {}
+            # Use location from the #nomain directive if available, else (1, 0)
+            nomain_loc = (1, 0)
+            for node in final_ast:
+                if isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'nomain':
+                    nomain_loc = node[3] if len(node) > 3 else (1, 0)
+                    break
+            synthetic_main = ('func', 'void', 'main', [], [], nomain_loc)
+            final_ast.append(synthetic_main)
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
     analyzer.library_funcs = library_funcs
     analyzer.library_vars = library_vars
-    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library)
+    # If file is a library (--lib flag), don't require main. Otherwise, require it.
+    require_main = not is_library
+    analyzer.analyze(final_ast, require_main=require_main, show_warnings=not is_library)
 
     # Strip location info before passing to optimizer/codegen
     stripped_ast = _strip_loc(final_ast)
@@ -482,6 +531,9 @@ def analyze_file(filepath, include_paths=None, is_library=False):
     dir_path = os.path.dirname(os.path.abspath(filepath))
     global_path = os.path.expanduser("~/.c5/include")
     
+    # Check for #nomain directive in the file
+    has_nomain = _has_nomain_directive(ast)
+    
     new_ast, library_funcs, library_vars, lib_includes, weak_symbols = _process_includes(
         ast, dir_path, include_paths, global_path, current_file_path=os.path.abspath(filepath)
     )
@@ -499,7 +551,9 @@ def analyze_file(filepath, include_paths=None, is_library=False):
     analyzer = SemanticAnalyzer(source_code=code, filename=filepath)
     analyzer.library_funcs = library_funcs
     analyzer.library_vars = library_vars
-    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library, exit_on_error=False)
+    # If file has #nomain directive, don't require main function
+    require_main = not (is_library or has_nomain)
+    analyzer.analyze(final_ast, require_main=require_main, show_warnings=not is_library, exit_on_error=False)
     
     return len(analyzer.errors) > 0, len(analyzer.errors), len(analyzer.warnings)
 
@@ -524,9 +578,16 @@ def analyze_files(filepaths, include_paths=None, is_library=False):
     use_namespaces = True
     processed_files = set()
     
+    # Check if primary file has #nomain directive
+    primary_code = open(primary_file).read()
+    primary_tokens = lex(primary_code)
+    primary_parser = Parser(primary_tokens)
+    primary_ast = primary_parser.parse_program()
+    has_nomain = _has_nomain_directive(primary_ast)
+    
     for filepath in filepaths:
         code = open(filepath).read()
-        all_code += f"\\n// File: {filepath}\\n" + code
+        all_code += f"\n// File: {filepath}\n" + code
         
         tokens = lex(code)
         parser = Parser(tokens)
@@ -580,11 +641,28 @@ def analyze_files(filepaths, include_paths=None, is_library=False):
     pre_ast = [node for node in expanded_ast if not (isinstance(node, tuple) and node[0] == 'macro')]
     
     final_ast = pre_ast
+    
+    # If #nomain directive is present and no main function exists, auto-generate one
+    if has_nomain:
+        # Check if main is defined in the AST
+        has_main = any(isinstance(node, tuple) and node[0] == 'func' and node[2] == 'main' for node in final_ast)
+        if not has_main:
+            # Auto-generate: void main() {}
+            # Use location from the #nomain directive if available, else (1, 0)
+            nomain_loc = (1, 0)
+            for node in final_ast:
+                if isinstance(node, tuple) and node[0] == 'directive' and node[1] == 'nomain':
+                    nomain_loc = node[3] if len(node) > 3 else (1, 0)
+                    break
+            synthetic_main = ('func', 'void', 'main', [], [], nomain_loc)
+            final_ast.append(synthetic_main)
             
     from .analyzer import SemanticAnalyzer
     analyzer = SemanticAnalyzer(source_code=all_code, filename=primary_file)
     analyzer.library_funcs = library_funcs
     analyzer.library_vars = library_vars
-    analyzer.analyze(final_ast, require_main=not is_library, show_warnings=not is_library, exit_on_error=False)
+    # If file is a library (--lib flag), don't require main. Otherwise, require it.
+    require_main = not is_library
+    analyzer.analyze(final_ast, require_main=require_main, show_warnings=not is_library, exit_on_error=False)
     
     return len(analyzer.errors) > 0, len(analyzer.errors), len(analyzer.warnings)

@@ -51,11 +51,13 @@ class Parser:
         loc = self._loc()
         self.consume('HASH')
         name = self.consume('ID').value
-        # For now, only namespaces is supported
         if name == 'namespaces':
             val = int(self.consume('NUMBER').value)
             self.consume('SEMI')
             return ('directive', 'namespaces', val, loc)
+        elif name == 'nomain':
+            self.consume('SEMI')
+            return ('directive', 'nomain', None, loc)
         else:
             raise SyntaxError(f"Unknown directive #{name} at line {loc[0]}")
 

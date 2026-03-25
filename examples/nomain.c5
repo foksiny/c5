@@ -1,0 +1,38 @@
+#nomain;
+
+// This file demonstrates the #nomain; directive
+// Files with #nomain; don't require a main() function
+// They act as library/module files that can be included by other C5 programs
+
+include <std.c5h>
+include <math.c5h>
+
+// Define some utility functions that can be used by main programs
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int multiply(int a, int b) {
+    return a * b;
+}
+
+string greet(string name) {
+    return "Hello, " + name + "!";
+}
+
+// Define a simple struct
+struct Point {
+    int x;
+    int y;
+};
+
+// Function that works with Point
+int distance_from_origin(Point p) {
+    // Simple Manhattan distance for demo
+    return math::abs(p.x) + math::abs(p.y);
+}
+
+// A constant exported variable
+// (commented out to avoid duplicate symbol issues in this demo)
+// let int PI = 314159;
